@@ -1,0 +1,113 @@
+"""Application-wide constants and enum-like string groups."""
+
+from enum import StrEnum
+
+
+class WorkflowRunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class ArtifactType(StrEnum):
+    STORY_INTAKE = "story_intake"
+    TEST_DESIGN = "test_design"
+
+
+class AuditEventType(StrEnum):
+    JIRA_STORY_FETCHED = "jira_story_fetched"
+    WORKFLOW_STARTED = "workflow_started"
+    STORY_INTAKE_CREATED = "story_intake_created"
+    TEST_DESIGN_CREATED = "test_design_created"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_APPROVED = "approval_approved"
+    APPROVAL_REJECTED = "approval_rejected"
+    WORKFLOW_FAILED = "workflow_failed"
+    WORKFLOW_COMPLETED = "workflow_completed"
+    AUTOMATION_JOB_CREATED = "automation_job_created"
+    AUTOMATION_JOB_STARTED = "automation_job_started"
+    AUTOMATION_FRAMEWORK_SCAN_STARTED = "automation_framework_scan_started"
+    AUTOMATION_FRAMEWORK_SCAN_COMPLETED = "automation_framework_scan_completed"
+    AUTOMATION_FRAMEWORK_SCAN_FAILED = "automation_framework_scan_failed"
+    AUTOMATION_CASE_SPEC_BUILT = "automation_case_spec_built"
+    AUTOMATION_REPO_CONTEXT_COLLECTED = "automation_repo_context_collected"
+    AUTOMATION_CONTEXT_COLLECTION_FAILED = "automation_context_collection_failed"
+    AUTOMATION_CHANGE_PLANNING_STARTED = "automation_change_planning_started"
+    AUTOMATION_CHANGE_PLAN_CREATED = "automation_change_plan_created"
+    AUTOMATION_CHANGE_PLANNING_FAILED = "automation_change_planning_failed"
+    AUTOMATION_CODE_GENERATION_STARTED = "automation_code_generation_started"
+    AUTOMATION_CODE_GENERATED = "automation_code_generated"
+    AUTOMATION_PATCH_VALIDATION_FAILED = "automation_patch_validation_failed"
+    AUTOMATION_WORKSPACE_APPLY_FAILED = "automation_workspace_apply_failed"
+    AUTOMATION_EXECUTION_STARTED = "automation_execution_started"
+    AUTOMATION_EXECUTION_COMPLETED = "automation_execution_completed"
+    AUTOMATION_EXECUTION_FAILED = "automation_execution_failed"
+    AUTOMATION_FAILURE_ANALYZED = "automation_failure_analyzed"
+    AUTOMATION_REPAIR_STARTED = "automation_repair_started"
+    AUTOMATION_REPAIR_APPLIED = "automation_repair_applied"
+    AUTOMATION_REPAIR_SKIPPED = "automation_repair_skipped"
+    AUTOMATION_REPAIR_FAILED = "automation_repair_failed"
+    AUTOMATION_REEXECUTION_COMPLETED = "automation_reexecution_completed"
+    AUTOMATION_REVIEW_APPROVED = "automation_review_approved"
+    AUTOMATION_REVIEW_REVISION_REQUESTED = "automation_review_revision_requested"
+    AUTOMATION_REVIEW_REVISION_APPLIED = "automation_review_revision_applied"
+    AUTOMATION_MANUAL_EDIT_ACKNOWLEDGED = "automation_manual_edit_acknowledged"
+    AUTOMATION_PR_CREATION_STARTED = "automation_pr_creation_started"
+    AUTOMATION_BRANCH_CREATED = "automation_branch_created"
+    AUTOMATION_BASE_REFRESH_STARTED = "automation_base_refresh_started"
+    AUTOMATION_BASE_REFRESH_COMPLETED = "automation_base_refresh_completed"
+    AUTOMATION_BASE_REFRESH_CONFLICT = "automation_base_refresh_conflict"
+    AUTOMATION_COMMIT_CREATED = "automation_commit_created"
+    AUTOMATION_PR_CREATED = "automation_pr_created"
+    AUTOMATION_PR_CREATION_FAILED = "automation_pr_creation_failed"
+
+
+class PrRecordStatus(StrEnum):
+    """Persisted on ``pr_records`` rows."""
+
+    BRANCH_READY = "branch_ready"
+    BASE_REFRESHED = "base_refreshed"
+    BASE_REFRESH_CONFLICT = "base_refresh_conflict"
+    COMMITTED = "committed"
+    PR_CREATED = "pr_created"
+    FAILED = "failed"
+
+
+class AutomationJobReviewActionType(StrEnum):
+    APPROVE = "approve"
+    REQUEST_REVISION = "request_revision"
+    MANUAL_EDIT_ACK = "manual_edit_ack"
+
+
+class AutomationJobStatus(StrEnum):
+    PENDING = "pending"
+    SCANNING_FRAMEWORK = "scanning_framework"
+    COLLECTING_CONTEXT = "collecting_context"
+    PLANNING_CHANGES = "planning_changes"
+    GENERATING_CODE = "generating_code"
+    APPLYING_CHANGES = "applying_changes"
+    EXECUTING = "executing"
+    AWAITING_AUTOMATION_REVIEW = "awaiting_automation_review"
+    REVISING_AFTER_REVIEW = "revising_after_review"
+    REPAIRING = "repairing"
+    AWAITING_HUMAN_INPUT = "awaiting_human_input"
+    AWAITING_AUTOMATION_APPROVAL = "awaiting_automation_approval"
+    APPROVED_FOR_PR = "approved_for_pr"
+    PR_CREATED = "pr_created"
+    FAILED = "failed"
+
+
+class ActorType(StrEnum):
+    USER = "user"
+    SYSTEM = "system"
+    AGENT = "agent"
