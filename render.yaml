@@ -1,0 +1,9 @@
+# Optional Blueprint: https://render.com/docs/blueprint-spec
+# If the service was created in the dashboard, set the same start command there.
+services:
+  - type: web
+    name: Qswarm
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
