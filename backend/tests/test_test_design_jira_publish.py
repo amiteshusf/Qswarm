@@ -1,4 +1,4 @@
-"""Sprint 1 test design → Jira draft Task publish (stub Jira, in-memory DB)."""
+"""Sprint 1 test design → single Jira draft review Task (stub Jira, in-memory DB)."""
 
 from __future__ import annotations
 
@@ -12,16 +12,19 @@ from app.connectors.jira_client import JiraClient, JiraClientError
 from app.core.constants import WorkflowRunStatus
 from app.db.models.approval import Approval
 from app.db.models.jira_generated_test_case import JiraGeneratedTestCase
+from app.db.models.jira_test_design_review_issue import JiraTestDesignReviewIssue
 from app.db.models.workflow_run import WorkflowRun
 
 
 @pytest.fixture(autouse=True)
-def _reset_stub_jira_create_counter():
+def _reset_stub_jira():
     jira_mod._STUB_CREATE_SEQ[0] = 0
+    jira_mod._STUB_COMMENT_SEQ[0] = 0
+    jira_mod._STUB_COMMENTS_BY_ISSUE.clear()
     yield
 
 
-def test_publish_creates_jira_rows_and_reaches_approval(client, db_session):
+def test_publish_creates_single_review_issue_and_reaches_approval(client, db_session):
     r = client.post(
         "/workflow/runs",
         json={"jira_issue_key": "QSW-101", "initiated_by": "tester"},
@@ -31,19 +34,27 @@ def test_publish_creates_jira_rows_and_reaches_approval(client, db_session):
     assert r2.status_code == 200, r2.text
     assert r2.json()["status"] == WorkflowRunStatus.AWAITING_APPROVAL.value
 
-    rows = db_session.scalars(
+    legacy = db_session.scalars(
         select(JiraGeneratedTestCase).where(JiraGeneratedTestCase.workflow_run_id == run_id)
     ).all()
-    published = [x for x in rows if x.publish_status == "published"]
-    assert len(published) >= 1
-    assert all(x.parent_jira_issue_key == "QSW-101" for x in published)
-    assert all(x.generated_jira_issue_key for x in published)
+    assert len(legacy) == 0
+
+    rev = db_session.scalars(
+        select(JiraTestDesignReviewIssue).where(JiraTestDesignReviewIssue.workflow_run_id == run_id)
+    ).one()
+    assert rev.publish_status == "published"
+    assert rev.review_jira_issue_key
+    assert rev.parent_jira_issue_key == "QSW-101"
+
+    jr = client.get(f"/workflow/runs/{run_id}/jira-review")
+    assert jr.status_code == 200
+    assert jr.json()["review_jira_issue_key"] == rev.review_jira_issue_key
 
     appr = db_session.execute(select(Approval).where(Approval.workflow_run_id == run_id)).scalar_one()
     assert appr.status == "pending"
 
 
-def test_list_generated_test_cases_endpoint(client, db_session):
+def test_list_generated_test_cases_endpoint_empty(client, db_session):
     r = client.post(
         "/workflow/runs",
         json={"jira_issue_key": "QSW-202", "initiated_by": "tester"},
@@ -54,24 +65,20 @@ def test_list_generated_test_cases_endpoint(client, db_session):
     assert gr.status_code == 200
     data = gr.json()
     assert data["workflow_run_id"] == run_id
-    assert len(data["items"]) >= 1
-    assert data["items"][0]["parent_jira_issue_key"] == "QSW-202"
+    assert data["items"] == []
 
 
-def test_reviewer_unset_leaves_null_reviewer_account(client, db_session):
+def test_reviewer_unset_review_issue_still_published(client, db_session):
     r = client.post(
         "/workflow/runs",
         json={"jira_issue_key": "QSW-303", "initiated_by": "tester"},
     )
     run_id = uuid.UUID(r.json()["id"])
     client.post(f"/workflow/runs/{run_id}/start")
-    rows = db_session.scalars(
-        select(JiraGeneratedTestCase).where(JiraGeneratedTestCase.workflow_run_id == run_id)
-    ).all()
-    pub = [x for x in rows if x.publish_status == "published"]
-    assert pub
-    assert all(x.reviewer_account_id is None for x in pub)
-    assert all(x.assignment_status == "skipped" for x in pub)
+    rev = db_session.scalars(
+        select(JiraTestDesignReviewIssue).where(JiraTestDesignReviewIssue.workflow_run_id == run_id)
+    ).one()
+    assert rev.publish_status == "published"
 
 
 def test_assign_failure_still_reaches_approval(client, db_session, monkeypatch):
@@ -94,12 +101,10 @@ def test_assign_failure_still_reaches_approval(client, db_session, monkeypatch):
         run_id = uuid.UUID(r.json()["id"])
         r2 = client.post(f"/workflow/runs/{run_id}/start")
         assert r2.status_code == 200
-        rows = db_session.scalars(
-            select(JiraGeneratedTestCase).where(JiraGeneratedTestCase.workflow_run_id == run_id)
-        ).all()
-        pub = [x for x in rows if x.publish_status == "published"]
-        assert pub
-        assert all(x.assignment_status == "failed" for x in pub)
+        rev = db_session.scalars(
+            select(JiraTestDesignReviewIssue).where(JiraTestDesignReviewIssue.workflow_run_id == run_id)
+        ).one()
+        assert rev.publish_status == "published"
     finally:
         monkeypatch.delenv("JIRA_DEFAULT_TEST_REVIEWER_ACCOUNT_ID", raising=False)
         get_settings.cache_clear()

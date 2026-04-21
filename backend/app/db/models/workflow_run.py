@@ -69,3 +69,14 @@ class WorkflowRun(Base):
         back_populates="workflow_run",
         cascade="all, delete-orphan",
     )
+    jira_test_design_review_issue: Mapped["JiraTestDesignReviewIssue | None"] = relationship(
+        "JiraTestDesignReviewIssue",
+        back_populates="workflow_run",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    jira_review_comment_events: Mapped[list["JiraReviewCommentEvent"]] = relationship(
+        "JiraReviewCommentEvent",
+        back_populates="workflow_run",
+        cascade="all, delete-orphan",
+    )

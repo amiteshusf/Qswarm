@@ -69,10 +69,12 @@ def build_publish_package(
     source_artifact_id: uuid.UUID,
     test_design_content_json: dict[str, Any] | None,
 ) -> TestDesignPublishPackage:
-    cases = draft_cases_from_test_design_json(test_design_content_json or {})
+    content = test_design_content_json if isinstance(test_design_content_json, dict) else None
+    cases = draft_cases_from_test_design_json(content or {})
     return TestDesignPublishPackage(
         parent_issue_key=parent_issue_key.strip().upper(),
         workflow_run_id=workflow_run_id,
         source_artifact_id=source_artifact_id,
         cases=cases,
+        full_design_json=content,
     )

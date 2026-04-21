@@ -124,6 +124,9 @@ def _stub_issue(issue_key: str) -> dict[str, Any]:
 
 
 _STUB_CREATE_SEQ: list[int] = [0]
+_STUB_COMMENT_SEQ: list[int] = [0]
+# Stub mode: issue key (upper) -> list of {id, body_text, author_account_id, created}
+_STUB_COMMENTS_BY_ISSUE: dict[str, list[dict[str, Any]]] = {}
 
 
 def project_key_from_issue_key(issue_key: str) -> str:
@@ -368,16 +371,15 @@ class JiraClient:
         url = f"{self._base}{path}"
         try:
             with httpx.Client(timeout=timeout) as client:
-                return client.request(
-                    method,
-                    url,
-                    headers={
-                        "Authorization": self._auth_header(),
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
-                    json=json_body,
-                )
+                headers: dict[str, str] = {
+                    "Authorization": self._auth_header(),
+                    "Accept": "application/json",
+                }
+                req_kw: dict[str, Any] = {"headers": headers}
+                if json_body is not None:
+                    headers["Content-Type"] = "application/json"
+                    req_kw["json"] = json_body
+                return client.request(method, url, **req_kw)
         except httpx.HTTPError as e:
             raise JiraClientError(f"Jira {method} {path} failed: {e}", status_code=None) from e
 
@@ -411,6 +413,7 @@ class JiraClient:
             _STUB_CREATE_SEQ[0] += 1
             n = _STUB_CREATE_SEQ[0]
             child_key = f"STUB-TC-{n:04d}"
+            _STUB_COMMENTS_BY_ISSUE.setdefault(child_key.upper(), [])
             return {"key": child_key, "id": f"stub-gen-{n}", "self": f"stub://{child_key}"}
 
         path = "/rest/api/3/issue"
@@ -475,18 +478,91 @@ class JiraClient:
         if r.status_code not in (200, 204):
             self._raise_write_error(path, r, "assign_issue")
 
-    def add_comment(self, issue_key: str, body_adf: dict[str, Any]) -> None:
-        """Add a comment on an issue (body must be ADF)."""
+    def add_comment(self, issue_key: str, body_adf: dict[str, Any]) -> str | None:
+        """Add a comment on an issue (body must be ADF). Returns new comment id when available."""
         key = issue_key.strip().upper()
         if not key:
             raise JiraClientError("issue_key is required", status_code=400)
         if self._stub:
-            return
+            _STUB_COMMENT_SEQ[0] += 1
+            cid = f"stub-cmt-{_STUB_COMMENT_SEQ[0]:05d}"
+            body_text = _extract_adf_text(body_adf) if isinstance(body_adf, dict) else ""
+            _STUB_COMMENTS_BY_ISSUE.setdefault(key, []).append(
+                {
+                    "id": cid,
+                    "body_text": body_text,
+                    "author_account_id": "stub-author",
+                    "created": f"2026-01-{_STUB_COMMENT_SEQ[0]:02d}T12:00:00.000+0000",
+                }
+            )
+            return cid
 
         path = f"/rest/api/3/issue/{key}/comment"
         r = self._request_json("POST", path, json_body={"body": body_adf})
         if r.status_code not in (200, 201):
             self._raise_write_error(path, r, "add_comment")
+        try:
+            data = r.json()
+        except json.JSONDecodeError:
+            return None
+        raw_id = data.get("id")
+        return str(raw_id) if raw_id is not None else None
+
+    def list_issue_comments(self, issue_key: str) -> list[dict[str, Any]]:
+        """
+        List comments on an issue (oldest first).
+
+        Each item: ``{"id": str, "body_text": str, "author_account_id": str|None, "created": str}``.
+        """
+        key = issue_key.strip().upper()
+        if not key:
+            raise JiraClientError("issue_key is required", status_code=400)
+        if self._stub:
+            rows = list(_STUB_COMMENTS_BY_ISSUE.get(key, []))
+            rows.sort(key=lambda x: str(x.get("created") or ""))
+            return rows
+
+        out: list[dict[str, Any]] = []
+        start_at = 0
+        page_size = 50
+        while True:
+            path = f"/rest/api/3/issue/{key}/comment?startAt={start_at}&maxResults={page_size}"
+            r = self._request_json("GET", path, json_body=None)
+            if r.status_code == 404:
+                raise JiraClientError(f"Issue not found: {key}", status_code=404)
+            if r.status_code >= 400:
+                self._raise_write_error(path, r, "list_issue_comments")
+            try:
+                data = r.json()
+            except json.JSONDecodeError as e:
+                raise JiraClientError(
+                    f"Invalid JSON listing comments for {key}",
+                    status_code=r.status_code,
+                ) from e
+            for c in data.get("comments") or []:
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("id") or "")
+                body = c.get("body")
+                body_text = _extract_adf_text(body) if isinstance(body, dict) else str(body or "")
+                author = c.get("author") or {}
+                aid = author.get("accountId") if isinstance(author, dict) else None
+                created = str(c.get("created") or "")
+                if cid:
+                    out.append(
+                        {
+                            "id": cid,
+                            "body_text": body_text,
+                            "author_account_id": str(aid) if aid else None,
+                            "created": created,
+                        }
+                    )
+            total = int(data.get("total") or len(out))
+            start_at += len(data.get("comments") or [])
+            if start_at >= total or not data.get("comments"):
+                break
+        out.sort(key=lambda x: x.get("created") or "")
+        return out
 
     def update_issue(
         self,

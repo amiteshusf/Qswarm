@@ -11,6 +11,10 @@ from app.db.models.jira_generated_test_case import JiraGeneratedTestCase
 from app.schemas.common import ErrorDetail, ErrorResponse
 from app.schemas.workflow import (
     JiraGeneratedDraftCaseResponse,
+    JiraReviewCommentEventItem,
+    JiraReviewCommentEventsListResponse,
+    JiraReviewIssueInfoResponse,
+    JiraReviewProcessCommentsResponse,
     TestDesignEvolutionResponse,
     TestDesignFeedbackItem,
     TestDesignFeedbackListResponse,
@@ -22,7 +26,7 @@ from app.schemas.workflow import (
     WorkflowRunResponse,
     WorkflowStartResponse,
 )
-from app.services import test_design_evolution_service, workflow_service
+from app.services import jira_review_comment_service, test_design_evolution_service, workflow_service
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
 
@@ -43,6 +47,19 @@ def _evolution_value_error_detail(exc: ValueError) -> tuple[int, str, str]:
     if msg in mapping:
         code, c, m = mapping[msg]
         return code, c, m
+    return status.HTTP_400_BAD_REQUEST, "bad_request", msg
+
+
+def _process_comments_value_error(exc: ValueError) -> tuple[int, str, str]:
+    msg = str(exc)
+    mapping: dict[str, tuple[int, str, str]] = {
+        "run_not_found": (status.HTTP_404_NOT_FOUND, "not_found", "Workflow run not found"),
+        "invalid_run_state": (status.HTTP_409_CONFLICT, "invalid_state", "Comment processing requires awaiting approval"),
+        "no_pending_approval": (status.HTTP_409_CONFLICT, "no_pending_approval", "No pending approval for this run"),
+        "no_review_issue": (status.HTTP_409_CONFLICT, "no_review_issue", "No published Jira review issue for this run"),
+    }
+    if msg in mapping:
+        return mapping[msg]
     return status.HTTP_400_BAD_REQUEST, "bad_request", msg
 
 
@@ -90,6 +107,86 @@ def list_generated_jira_test_cases(run_id: uuid.UUID, db: DbSession):
     return WorkflowJiraDraftTestCasesResponse(
         workflow_run_id=run_id,
         items=[JiraGeneratedDraftCaseResponse.model_validate(r) for r in rows],
+    )
+
+
+@router.get(
+    "/runs/{run_id}/jira-review",
+    response_model=JiraReviewIssueInfoResponse,
+    responses={404: {"model": ErrorResponse}},
+    summary="Linked Jira draft test design review issue (Sprint 1)",
+)
+def get_jira_review_issue(run_id: uuid.UUID, db: DbSession):
+    run = workflow_service.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorDetail(code="not_found", message="Workflow run not found").model_dump(),
+        )
+    rev = jira_review_comment_service.get_review_issue_for_run(db, run_id)
+    if rev is None:
+        return JiraReviewIssueInfoResponse(
+            workflow_run_id=run_id,
+            parent_jira_issue_key=None,
+            review_jira_issue_key=None,
+            publish_status=None,
+            last_sync_error=None,
+            artifact_id=None,
+        )
+    return JiraReviewIssueInfoResponse(
+        workflow_run_id=run_id,
+        parent_jira_issue_key=rev.parent_jira_issue_key,
+        review_jira_issue_key=rev.review_jira_issue_key,
+        publish_status=rev.publish_status,
+        last_sync_error=rev.last_sync_error,
+        artifact_id=str(rev.artifact_id) if rev.artifact_id else None,
+    )
+
+
+@router.post(
+    "/runs/{run_id}/jira-review/process-comments",
+    response_model=JiraReviewProcessCommentsResponse,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+    summary="Fetch Jira comments on the review issue and process new @QSwarm mentions",
+)
+def process_jira_review_comments(run_id: uuid.UUID, db: DbSession, jira: JiraClientDep):
+    try:
+        out = jira_review_comment_service.process_jira_review_comments(db, jira, workflow_run_id=run_id)
+    except ValueError as e:
+        db.commit()
+        code, c, m = _process_comments_value_error(e)
+        raise HTTPException(
+            status_code=code,
+            detail=ErrorDetail(code=c, message=m).model_dump(),
+        ) from e
+    except JiraClientError as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=ErrorDetail(code="jira_error", message=str(e)).model_dump(),
+        ) from e
+
+    db.commit()
+    return JiraReviewProcessCommentsResponse.model_validate(out)
+
+
+@router.get(
+    "/runs/{run_id}/jira-review/comments",
+    response_model=JiraReviewCommentEventsListResponse,
+    responses={404: {"model": ErrorResponse}},
+    summary="QSwarm-persisted history of processed Jira review comments",
+)
+def list_jira_review_comment_events(run_id: uuid.UUID, db: DbSession):
+    run = workflow_service.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorDetail(code="not_found", message="Workflow run not found").model_dump(),
+        )
+    raw = jira_review_comment_service.list_comment_events_for_api(db, run_id)
+    return JiraReviewCommentEventsListResponse(
+        workflow_run_id=run_id,
+        items=[JiraReviewCommentEventItem.model_validate(x) for x in raw],
     )
 
 

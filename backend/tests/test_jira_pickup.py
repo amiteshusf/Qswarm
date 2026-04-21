@@ -69,6 +69,9 @@ class _HarnessJira:
     def add_comment(self, issue_key: str, body_adf):
         return self._inner.add_comment(issue_key, body_adf)
 
+    def list_issue_comments(self, issue_key: str):
+        return self._inner.list_issue_comments(issue_key)
+
 
 def test_poll_picks_up_eligible_story(client):
     app.dependency_overrides[get_jira_client] = lambda: _HarnessJira([_hit()])

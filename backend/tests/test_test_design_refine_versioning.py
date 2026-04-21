@@ -1,4 +1,4 @@
-"""Sprint 1 test design versions, refine/regenerate, Jira draft sync (stub)."""
+"""Sprint 1 test design versions, refine/regenerate, Jira delta comments (stub)."""
 
 from __future__ import annotations
 
@@ -19,8 +19,10 @@ from app.db.models.workflow_run import WorkflowRun
 
 
 @pytest.fixture(autouse=True)
-def _reset_stub_jira_create_counter():
+def _reset_stub_jira():
     jira_mod._STUB_CREATE_SEQ[0] = 0
+    jira_mod._STUB_COMMENT_SEQ[0] = 0
+    jira_mod._STUB_COMMENTS_BY_ISSUE.clear()
     yield
 
 
@@ -100,13 +102,15 @@ def test_regenerate_creates_new_version(client, db_session):
     assert fb[0].action_type == "regenerate"
 
 
-def test_refine_calls_jira_update_issue(client, db_session, monkeypatch):
-    calls: list[tuple[str, dict]] = []
+def test_refine_posts_delta_jira_comment(client, db_session, monkeypatch):
+    calls: list[tuple[str, object]] = []
+    orig = JiraClient.add_comment
 
-    def capture(self, issue_key: str, **kwargs):
-        calls.append((issue_key, kwargs))
+    def capture(self, issue_key: str, body_adf):
+        calls.append((issue_key, body_adf))
+        return orig(self, issue_key, body_adf)
 
-    monkeypatch.setattr(JiraClient, "update_issue", capture)
+    monkeypatch.setattr(JiraClient, "add_comment", capture)
     run_id = _run_to_approval(client)
     r = client.post(
         f"/workflow/runs/{run_id}/test-design/refine",
@@ -114,7 +118,6 @@ def test_refine_calls_jira_update_issue(client, db_session, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert len(calls) >= 1
-    assert all(kw.get("summary") for _, kw in calls if kw)
 
 
 def test_refine_blocked_after_completed(client, db_session):
@@ -158,13 +161,13 @@ def test_read_version_and_feedback_endpoints(client, db_session):
     assert fr.json()["items"][0]["target_scope"] == "all"
 
 
-def test_jira_update_failure_does_not_advance_version(client, db_session, monkeypatch):
+def test_jira_delta_failure_does_not_advance_version(client, db_session, monkeypatch):
     run_id = _run_to_approval(client)
 
-    def boom(self, issue_key: str, **kwargs):
-        raise JiraClientError("update failed", status_code=400)
+    def boom(self, issue_key: str, body_adf):
+        raise JiraClientError("comment failed", status_code=400)
 
-    monkeypatch.setattr(JiraClient, "update_issue", boom)
+    monkeypatch.setattr(JiraClient, "add_comment", boom)
     r = client.post(
         f"/workflow/runs/{run_id}/test-design/refine",
         json={"actor_id": "qa.lead", "feedback_text": "negative"},

@@ -110,3 +110,41 @@ class TestDesignFeedbackItem(BaseModel):
 class TestDesignFeedbackListResponse(BaseModel):
     workflow_run_id: uuid.UUID
     items: list[TestDesignFeedbackItem]
+
+
+class JiraReviewIssueInfoResponse(BaseModel):
+    workflow_run_id: uuid.UUID
+    parent_jira_issue_key: str | None = None
+    review_jira_issue_key: str | None = None
+    publish_status: str | None = None
+    last_sync_error: str | None = None
+    artifact_id: str | None = None
+
+
+class JiraReviewCommentEventItem(BaseModel):
+    id: str
+    review_issue_key: str
+    jira_comment_id: str
+    author_account_id: str | None
+    raw_comment_text: str
+    parsed_action_type: str
+    target_scope: str | None
+    reviewed_version_id: str | None
+    processed_status: str
+    response_comment_id: str | None
+    error_detail: str | None
+    created_feedback_id: str | None
+    created_at: str
+
+
+class JiraReviewCommentEventsListResponse(BaseModel):
+    workflow_run_id: uuid.UUID
+    items: list[JiraReviewCommentEventItem]
+
+
+class JiraReviewProcessCommentsResponse(BaseModel):
+    ok: bool = True
+    workflow_run_id: str
+    processed_count: int
+    skipped_duplicates: int = 0
+    errors: list[str] = Field(default_factory=list)

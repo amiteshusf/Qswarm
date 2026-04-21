@@ -6,7 +6,9 @@ from app.db.models.audit_log import AuditLog
 from app.db.models.automation_job import AutomationJob
 from app.db.models.automation_job_review_action import AutomationJobReviewAction
 from app.db.models.jira_generated_test_case import JiraGeneratedTestCase
+from app.db.models.jira_review_comment_event import JiraReviewCommentEvent
 from app.db.models.jira_story import JiraStory
+from app.db.models.jira_test_design_review_issue import JiraTestDesignReviewIssue
 from app.db.models.pr_record import PrRecord
 from app.db.models.test_design_feedback import TestDesignFeedback
 from app.db.models.test_design_version import TestDesignVersion
@@ -19,7 +21,9 @@ __all__ = [
     "AutomationJob",
     "AutomationJobReviewAction",
     "JiraGeneratedTestCase",
+    "JiraReviewCommentEvent",
     "JiraStory",
+    "JiraTestDesignReviewIssue",
     "PrRecord",
     "TestDesignFeedback",
     "TestDesignVersion",

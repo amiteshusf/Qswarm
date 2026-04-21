@@ -30,6 +30,10 @@ class TestDesignPublishPackage(BaseModel):
     workflow_run_id: uuid.UUID
     source_artifact_id: uuid.UUID
     cases: list[TestCaseDraft] = Field(default_factory=list)
+    full_design_json: dict | None = Field(
+        default=None,
+        description="Full internal test design JSON (for Jira review issue body).",
+    )
 
 
 class PublishResult(BaseModel):
