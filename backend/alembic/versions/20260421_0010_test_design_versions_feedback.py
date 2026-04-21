@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("parent_version_id", sa.Uuid(as_uuid=True), nullable=True),
         sa.Column("version_action", sa.String(length=32), nullable=False),
         sa.Column("source_feedback_id", sa.Uuid(as_uuid=True), nullable=True),
-        sa.Column("is_current", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("is_current", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("created_by", sa.String(length=256), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("notes", sa.Text(), nullable=True),
