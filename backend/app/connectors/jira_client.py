@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
 import httpx
@@ -16,6 +17,38 @@ class JiraClientError(Exception):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+# Jira Cloud removed POST /rest/api/3/search (410 Gone); use enhanced JQL search.
+_JIRA_SEARCH_JQL_PATH = "/rest/api/3/search/jql"
+
+
+def _jira_error_messages_from_body(text: str) -> str:
+    """Extract human-readable lines from Jira JSON error body (no secrets)."""
+    if not (text or "").strip():
+        return ""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return text.strip()[:500]
+    if not isinstance(data, dict):
+        return text.strip()[:500]
+    msgs = list(data.get("errorMessages") or [])
+    if msgs:
+        return "; ".join(str(m) for m in msgs)[:800]
+    errs = data.get("errors")
+    if isinstance(errs, dict) and errs:
+        parts = [f"{k}: {v}" for k, v in list(errs.items())[:8]]
+        return "; ".join(parts)[:800]
+    return text.strip()[:500]
+
+
+def _format_jira_search_http_error(*, path: str, status_code: int, body_text: str) -> str:
+    detail = _jira_error_messages_from_body(body_text)
+    base = f"Jira JQL search failed: POST {path} returned HTTP {status_code}."
+    if detail:
+        return f"{base} {detail}"
+    return base
 
 
 def _extract_adf_text(node: Any) -> str:
@@ -215,7 +248,8 @@ class JiraClient:
                 )
             return {"issues": issues, "total": stub.get("total")}
 
-        url = f"{self._base}/rest/api/3/search"
+        path = _JIRA_SEARCH_JQL_PATH
+        url = f"{self._base}{path}"
         body = {
             "jql": jql,
             "maxResults": max_results,
@@ -233,7 +267,12 @@ class JiraClient:
                     json=body,
                 )
         except httpx.HTTPError as e:
-            raise JiraClientError(f"Jira search failed: {e}") from e
+            raise JiraClientError(
+                f"Jira JQL search request failed (POST {path}): {e}",
+                status_code=None,
+            ) from e
+
+        body_text = r.text or ""
 
         if r.status_code == 401:
             raise JiraClientError(
@@ -247,18 +286,30 @@ class JiraClient:
             )
         if r.status_code >= 400:
             raise JiraClientError(
-                f"Jira search error ({r.status_code}): {r.text[:400]}".strip(),
+                _format_jira_search_http_error(
+                    path=path, status_code=r.status_code, body_text=body_text
+                ),
                 status_code=r.status_code,
             )
 
-        data = r.json()
+        try:
+            data = r.json()
+        except json.JSONDecodeError as e:
+            raise JiraClientError(
+                f"Jira JQL search returned invalid JSON from POST {path} (HTTP {r.status_code}).",
+                status_code=r.status_code,
+            ) from e
+
         issues = []
         for item in data.get("issues") or []:
+            if not isinstance(item, dict):
+                continue
             fields = item.get("fields") or {}
             st = fields.get("status") or {}
+            issue_key = str(item.get("key") or fields.get("key") or "").strip()
             issues.append(
                 {
-                    "issue_key": item.get("key", ""),
+                    "issue_key": issue_key,
                     "summary": str(fields.get("summary") or ""),
                     "status": st.get("name"),
                     "labels": list(fields.get("labels") or []),
@@ -266,4 +317,11 @@ class JiraClient:
                     "status_category_key": (st.get("statusCategory") or {}).get("key"),
                 }
             )
-        return {"issues": issues, "total": data.get("total")}
+
+        raw_total = data.get("total")
+        if raw_total is None:
+            raw_total = data.get("totalIssueCount")
+        if raw_total is None:
+            raw_total = len(issues)
+
+        return {"issues": issues, "total": raw_total}
