@@ -49,10 +49,14 @@ pytest tests/ -v
 ## Example API flow (Sprint 1)
 
 1. `POST /workflow/runs` with body `{"jira_issue_key": "PROJ-1", "initiated_by": "you"}`  
-2. `POST /workflow/runs/{run_id}/start` — fetches Jira (or stub), stores story, runs intake + test design agents, creates an approval; run status becomes `awaiting_approval`.  
-3. `GET /approvals/{approval_id}` — inspect the pending approval.  
-4. `POST /approvals/{approval_id}/approve` or `.../reject` with `{"actor_id": "reviewer", "notes": "..."}`.  
-5. `GET /audit/workflow/{run_id}` — inspect the audit trail.
+2. `POST /workflow/runs/{run_id}/start` — fetches Jira (or stub), story intake, test design, **publishes up to three draft Tasks to Jira** (real API when not stubbed), then creates the QSwarm approval; run status becomes `awaiting_approval` (or `failed` if Jira issue creation fails).  
+3. `GET /workflow/runs/{run_id}/generated-test-cases` — rows written for each published Jira draft Task (`jira_generated_test_cases` table; run **`alembic upgrade head`** after pulling if you use Postgres).  
+4. **Draft review iteration (Sprint 1):** While the run is still `awaiting_approval` with a **pending** QSwarm approval, reviewers can call **`POST /workflow/runs/{run_id}/test-design/refine`** or **`.../regenerate`** with `{"actor_id": "...", "feedback_text": "...", "target_scope": "all"}` (target optional). QSwarm keeps **internal version history** (`test_design_versions` + new `test_design` artifacts); **Jira draft Tasks are updated in place** (same issue keys) via `JiraClient.update_issue`, with optional new Tasks only when the draft set grows. **`GET .../test-design/versions`** and **`GET .../test-design/feedback`** expose history. **Human approval stays in QSwarm** (`/approvals/...`); refine/regenerate do not move approval into Jira. Deterministic keyword-style interpretation only (no LLM). Migration: **`20260421_0010_test_design_versions_feedback`**.  
+5. `GET /approvals/{approval_id}` — inspect the pending approval (**approval remains in QSwarm**, not in Jira).  
+6. `POST /approvals/{approval_id}/approve` or `.../reject` with `{"actor_id": "reviewer", "notes": "..."}`.  
+7. `GET /audit/workflow/{run_id}` — inspect the audit trail.
+
+**Publish layer:** internal artifacts stay the source of truth; a canonical **`TestDesignPublishPackage`** is built from the `test_design` artifact and passed to a pluggable publisher. Only **Jira** is implemented today (`JiraTestDesignPublisher` — standard **Task** issues, **Relates** link to the parent story, optional assignee via **`JIRA_DEFAULT_TEST_REVIEWER_ACCOUNT_ID`**). TestRail/Xray/Zephyr publishers are not built yet.
 
 Other useful endpoints: `GET /health`, `GET /health/db`, `GET /jira/connection-test`, `GET /jira/issues/{issue_key}`, `GET /jira/story/{issue_key}`, `POST /jira/search`, `POST /intake/from-jira/{issue_key}`.
 
@@ -98,6 +102,7 @@ Sprint 1 can still be started explicitly via `POST /workflow/runs` and `POST /wo
 | `DATABASE_URL` | SQLAlchemy URL (`postgresql+psycopg://...` recommended) |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Live Jira (Basic auth) |
 | `JIRA_USE_STUB` | When `true` or token missing, Jira calls use stub data |
+| `JIRA_DEFAULT_TEST_REVIEWER_ACCOUNT_ID` | Optional Atlassian `accountId` to assign generated draft Jira Tasks after publish |
 | `INTERNAL_ACTOR_DEFAULT` | Placeholder default actor (Sprint 1) |
 | `CODING_PROVIDER` | Change planning provider (`stub` default; real Codex/Claude later) |
 | `PLAYWRIGHT_EXECUTION_TIMEOUT_SECONDS` | Subprocess timeout for `POST .../execute` (default **120**) |

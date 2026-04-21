@@ -57,6 +57,18 @@ class _HarnessJira:
     def get_issue(self, issue_key: str):
         return self._inner.get_issue(issue_key)
 
+    def create_issue(self, **kwargs):
+        return self._inner.create_issue(**kwargs)
+
+    def link_issues(self, **kwargs):
+        return self._inner.link_issues(**kwargs)
+
+    def assign_issue(self, issue_key: str, account_id: str):
+        return self._inner.assign_issue(issue_key, account_id)
+
+    def add_comment(self, issue_key: str, body_adf):
+        return self._inner.add_comment(issue_key, body_adf)
+
 
 def test_poll_picks_up_eligible_story(client):
     app.dependency_overrides[get_jira_client] = lambda: _HarnessJira([_hit()])

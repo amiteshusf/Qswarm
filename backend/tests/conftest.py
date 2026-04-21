@@ -13,6 +13,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("JIRA_USE_STUB", "true")
 
 from app.core.config import get_settings
+import app.db.models  # noqa: F401 — register all ORM models on Base.metadata
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app

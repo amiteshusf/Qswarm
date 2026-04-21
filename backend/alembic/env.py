@@ -13,8 +13,11 @@ from app.db.models import (  # noqa: F401 — register metadata
     AuditLog,
     AutomationJob,
     AutomationJobReviewAction,
+    JiraGeneratedTestCase,
     JiraStory,
     PrRecord,
+    TestDesignFeedback,
+    TestDesignVersion,
     WorkflowRun,
 )
 

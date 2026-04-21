@@ -7,13 +7,14 @@ Human approve/reject is handled via FastAPI, not inside the graph.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 
 from app.agents.story_intake_agent import run_intake
 from app.agents.test_design_agent import run_test_design
 from app.connectors.jira_client import JiraClient
+from app.core.config import get_settings
 from app.core.constants import (
     ActorType,
     ArtifactType,
@@ -24,8 +25,11 @@ from app.core.constants import (
 from app.db.models.agent_artifact import AgentArtifact
 from app.db.models.approval import Approval
 from app.db.models.workflow_run import WorkflowRun
+from app.publishers.jira_publisher import JiraTestDesignPublisher
 from app.services import audit_service
+from app.services import test_design_version_service as test_design_version_svc
 from app.services.jira_service import fetch_and_upsert_story, story_to_api_dict
+from app.services.test_design_publish_builder import build_publish_package
 from app.workflows.state import Sprint1State
 
 
@@ -119,7 +123,50 @@ class Sprint1Runner:
             entity_id=str(art.id),
             payload={"artifact_type": ArtifactType.TEST_DESIGN.value},
         )
+        test_design_version_svc.record_initial_version(
+            self.db,
+            workflow_run_id=run.id,
+            artifact_id=art.id,
+            created_by=state.get("initiated_by") or run.initiated_by,
+        )
         return {"test_design_artifact_id": str(art.id)}
+
+    def publish_test_design_to_jira(self, state: Sprint1State) -> dict[str, Any]:
+        run_id = uuid.UUID(state["run_id"])
+        run = self.db.get(WorkflowRun, run_id)
+        if run is None:
+            return {"errors": ["workflow_run missing in publish_test_design_to_jira"]}
+        tid = state.get("test_design_artifact_id")
+        if not tid:
+            return {"errors": ["test_design_artifact_id missing"]}
+        art = self.db.get(AgentArtifact, uuid.UUID(tid))
+        if art is None or not art.content_json:
+            return {"errors": ["test design artifact not found"]}
+        parent_key = (state.get("jira_issue_key") or "").strip().upper()
+        if not parent_key:
+            return {"errors": ["jira_issue_key missing"]}
+
+        content = art.content_json if isinstance(art.content_json, dict) else {}
+        package = build_publish_package(
+            parent_issue_key=parent_key,
+            workflow_run_id=run.id,
+            source_artifact_id=art.id,
+            test_design_content_json=content,
+        )
+        settings = get_settings()
+        publisher = JiraTestDesignPublisher(self.jira_client, settings)
+        result = publisher.publish(package, db=self.db, workflow_run_id=run.id, reviewer_account_id=None)
+
+        run.current_step = "publish_test_design_to_jira"
+        self.db.flush()
+
+        if result.hard_failure:
+            return {
+                "errors": list(result.errors or ["test_design_publish_failed"]),
+                "publish_warnings": list(result.warnings or []),
+            }
+
+        return {"publish_warnings": list(result.warnings or [])}
 
     def create_approval_request(self, state: Sprint1State) -> dict[str, Any]:
         run_id = uuid.UUID(state["run_id"])
@@ -163,15 +210,27 @@ class Sprint1Runner:
         }
 
 
+def _route_after_publish(state: Sprint1State) -> Literal["end", "approval"]:
+    if state.get("errors"):
+        return "end"
+    return "approval"
+
+
 def build_sprint1_graph(runner: Sprint1Runner):
     g = StateGraph(Sprint1State)
     g.add_node("fetch_story", runner.fetch_story)
     g.add_node("create_story_intake", runner.create_story_intake)
     g.add_node("create_test_design", runner.create_test_design)
+    g.add_node("publish_test_design_to_jira", runner.publish_test_design_to_jira)
     g.add_node("create_approval_request", runner.create_approval_request)
     g.set_entry_point("fetch_story")
     g.add_edge("fetch_story", "create_story_intake")
     g.add_edge("create_story_intake", "create_test_design")
-    g.add_edge("create_test_design", "create_approval_request")
+    g.add_edge("create_test_design", "publish_test_design_to_jira")
+    g.add_conditional_edges(
+        "publish_test_design_to_jira",
+        _route_after_publish,
+        {"end": END, "approval": "create_approval_request"},
+    )
     g.add_edge("create_approval_request", END)
     return g.compile()

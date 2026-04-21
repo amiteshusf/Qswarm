@@ -69,6 +69,7 @@ def _final_state_to_graph_json(final: dict[str, Any]) -> dict[str, Any]:
         "initiated_by",
         "intake_artifact_id",
         "test_design_artifact_id",
+        "publish_warnings",
         "approval_id",
         "approval_status",
     ):
@@ -119,6 +120,7 @@ def start_run(db: Session, run_id: uuid.UUID, jira_client: JiraClient) -> Workfl
         "jira_issue_key": issue_key,
         "initiated_by": initiated_by,
         "errors": [],
+        "publish_warnings": [],
     }
 
     try:

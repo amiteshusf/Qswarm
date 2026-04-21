@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     jira_email: str = Field(default="", alias="JIRA_EMAIL")
     jira_api_token: str = Field(default="", alias="JIRA_API_TOKEN")
     jira_use_stub: bool = Field(default=True, alias="JIRA_USE_STUB")
+    jira_default_test_reviewer_account_id: str = Field(
+        default="",
+        alias="JIRA_DEFAULT_TEST_REVIEWER_ACCOUNT_ID",
+        description="Optional Atlassian accountId for assigning generated draft Jira Tasks.",
+    )
 
     internal_actor_default: str = Field(default="system", alias="INTERNAL_ACTOR_DEFAULT")
 

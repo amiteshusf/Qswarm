@@ -1,4 +1,4 @@
-"""Read-only Jira REST client (v3) with httpx; stub mode for local development."""
+"""Jira REST client (v3) with httpx: reads, search, and limited writes; stub mode for local development."""
 
 from __future__ import annotations
 
@@ -121,6 +121,35 @@ def _stub_issue(issue_key: str) -> dict[str, Any]:
         "labels": labels,
         "raw_payload": {"stub": True, "key": key},
     }
+
+
+_STUB_CREATE_SEQ: list[int] = [0]
+
+
+def project_key_from_issue_key(issue_key: str) -> str:
+    """``NSP-678`` -> ``NSP`` (standard Jira key shape)."""
+    key = issue_key.strip().upper()
+    if "-" not in key:
+        raise JiraClientError(f"Cannot derive Jira project key from issue key: {issue_key}", status_code=400)
+    return key.rsplit("-", 1)[0]
+
+
+def plain_lines_to_adf(lines: list[str]) -> dict[str, Any]:
+    """Build minimal Atlassian Document Format from plain lines (one paragraph per line)."""
+    content: list[dict[str, Any]] = []
+    for line in lines:
+        text = (line or "")[:12000]
+        if not text.strip():
+            continue
+        content.append({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    if not content:
+        content = [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "(no description body)"}],
+            }
+        ]
+    return {"type": "doc", "version": 1, "content": content}
 
 
 def _stub_search(jql: str, max_results: int) -> dict[str, Any]:
@@ -325,3 +354,162 @@ class JiraClient:
             raw_total = len(issues)
 
         return {"issues": issues, "total": raw_total}
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 45.0,
+    ) -> httpx.Response:
+        if self._stub:
+            raise JiraClientError("_request_json should not be called in stub mode", status_code=500)
+        url = f"{self._base}{path}"
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                return client.request(
+                    method,
+                    url,
+                    headers={
+                        "Authorization": self._auth_header(),
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                    json=json_body,
+                )
+        except httpx.HTTPError as e:
+            raise JiraClientError(f"Jira {method} {path} failed: {e}", status_code=None) from e
+
+    def _raise_write_error(self, path: str, r: httpx.Response, action: str) -> None:
+        body = r.text or ""
+        detail = _jira_error_messages_from_body(body)
+        msg = f"Jira {action}: {path} returned HTTP {r.status_code}."
+        if detail:
+            msg = f"{msg} {detail}"
+        raise JiraClientError(msg.strip(), status_code=r.status_code)
+
+    def create_issue(
+        self,
+        *,
+        project_key: str,
+        summary: str,
+        description_adf: dict[str, Any],
+        issue_type_name: str = "Task",
+        labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a Jira issue. Returns ``{"key": "PROJ-1", "id": "10001", ...}`` from API JSON.
+        """
+        pk = project_key.strip().upper()
+        if not pk:
+            raise JiraClientError("project_key is required", status_code=400)
+        if not (summary or "").strip():
+            raise JiraClientError("summary is required", status_code=400)
+
+        if self._stub:
+            _STUB_CREATE_SEQ[0] += 1
+            n = _STUB_CREATE_SEQ[0]
+            child_key = f"STUB-TC-{n:04d}"
+            return {"key": child_key, "id": f"stub-gen-{n}", "self": f"stub://{child_key}"}
+
+        path = "/rest/api/3/issue"
+        fields: dict[str, Any] = {
+            "project": {"key": pk},
+            "summary": summary.strip()[:254],
+            "issuetype": {"name": issue_type_name},
+            "description": description_adf,
+        }
+        extra_labels = [str(x) for x in (labels or []) if str(x).strip()]
+        if extra_labels:
+            fields["labels"] = extra_labels[:20]
+
+        r = self._request_json("POST", path, json_body={"fields": fields})
+        if r.status_code not in (200, 201):
+            self._raise_write_error(path, r, "create_issue")
+        data = r.json()
+        key = str(data.get("key") or "").strip()
+        if not key:
+            raise JiraClientError(
+                f"Jira create_issue succeeded but response had no key: POST {path}",
+                status_code=r.status_code,
+            )
+        return data
+
+    def link_issues(
+        self,
+        *,
+        inward_issue_key: str,
+        outward_issue_key: str,
+        link_type_name: str = "Relates",
+    ) -> None:
+        """Create an issue link between two issues (direction depends on link type semantics)."""
+        ik = inward_issue_key.strip().upper()
+        ok = outward_issue_key.strip().upper()
+        if not ik or not ok:
+            raise JiraClientError("link_issues requires both issue keys", status_code=400)
+        if self._stub:
+            return
+
+        path = "/rest/api/3/issueLink"
+        body = {
+            "type": {"name": link_type_name},
+            "inwardIssue": {"key": ik},
+            "outwardIssue": {"key": ok},
+        }
+        r = self._request_json("POST", path, json_body=body)
+        if r.status_code not in (200, 201):
+            self._raise_write_error(path, r, "link_issues")
+
+    def assign_issue(self, issue_key: str, account_id: str) -> None:
+        """Assign issue to a user by Atlassian ``accountId``."""
+        key = issue_key.strip().upper()
+        aid = account_id.strip()
+        if not key or not aid:
+            raise JiraClientError("assign_issue requires issue_key and account_id", status_code=400)
+        if self._stub:
+            return
+
+        path = f"/rest/api/3/issue/{key}/assignee"
+        r = self._request_json("PUT", path, json_body={"accountId": aid})
+        if r.status_code not in (200, 204):
+            self._raise_write_error(path, r, "assign_issue")
+
+    def add_comment(self, issue_key: str, body_adf: dict[str, Any]) -> None:
+        """Add a comment on an issue (body must be ADF)."""
+        key = issue_key.strip().upper()
+        if not key:
+            raise JiraClientError("issue_key is required", status_code=400)
+        if self._stub:
+            return
+
+        path = f"/rest/api/3/issue/{key}/comment"
+        r = self._request_json("POST", path, json_body={"body": body_adf})
+        if r.status_code not in (200, 201):
+            self._raise_write_error(path, r, "add_comment")
+
+    def update_issue(
+        self,
+        issue_key: str,
+        *,
+        summary: str | None = None,
+        description_adf: dict[str, Any] | None = None,
+    ) -> None:
+        """Update summary and/or description (ADF) on an existing issue."""
+        key = issue_key.strip().upper()
+        if not key:
+            raise JiraClientError("issue_key is required", status_code=400)
+        fields: dict[str, Any] = {}
+        if summary is not None and summary.strip():
+            fields["summary"] = summary.strip()[:254]
+        if description_adf is not None:
+            fields["description"] = description_adf
+        if not fields:
+            return
+        if self._stub:
+            return
+
+        path = f"/rest/api/3/issue/{key}"
+        r = self._request_json("PUT", path, json_body={"fields": fields})
+        if r.status_code not in (200, 204):
+            self._raise_write_error(path, r, "update_issue")

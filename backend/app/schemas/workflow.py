@@ -33,3 +33,80 @@ class WorkflowStartResponse(BaseModel):
     run_id: uuid.UUID
     status: str
     message: str = Field(default="Workflow executed through approval gate.")
+
+
+class JiraGeneratedDraftCaseResponse(BaseModel):
+    """One persisted Jira draft Task created during Sprint 1 publish."""
+
+    id: uuid.UUID
+    parent_jira_issue_key: str
+    generated_jira_issue_key: str | None
+    title: str
+    case_type: str
+    reviewer_account_id: str | None
+    external_system: str
+    publish_status: str
+    link_status: str
+    assignment_status: str
+    error_detail: str | None
+    case_index: int = 0
+    internal_sync_version: int | None = None
+    jira_sync_status: str | None = None
+    last_sync_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowJiraDraftTestCasesResponse(BaseModel):
+    workflow_run_id: uuid.UUID
+    items: list[JiraGeneratedDraftCaseResponse]
+
+
+class TestDesignFeedbackRequest(BaseModel):
+    actor_id: str = Field(..., min_length=1, examples=["qa.lead"])
+    feedback_text: str = Field(..., min_length=1, examples=["Add more negative scenarios and make steps more detailed."])
+    target_scope: str | None = Field(default=None, max_length=128, examples=["all"])
+
+
+class TestDesignEvolutionResponse(BaseModel):
+    ok: bool = True
+    workflow_run_id: str
+    new_version_number: int
+    action: str
+    message: str
+
+
+class TestDesignVersionItem(BaseModel):
+    id: str
+    artifact_id: str
+    version_number: int
+    parent_version_id: str | None
+    version_action: str
+    source_feedback_id: str | None
+    is_current: bool
+    created_by: str
+    created_at: str
+    notes: str | None = None
+
+
+class TestDesignVersionsListResponse(BaseModel):
+    workflow_run_id: uuid.UUID
+    items: list[TestDesignVersionItem]
+
+
+class TestDesignFeedbackItem(BaseModel):
+    id: str
+    reviewed_version_id: str | None
+    action_type: str
+    feedback_text: str
+    actor_id: str
+    target_scope: str | None
+    error_detail: str | None
+    created_at: str
+
+
+class TestDesignFeedbackListResponse(BaseModel):
+    workflow_run_id: uuid.UUID
+    items: list[TestDesignFeedbackItem]

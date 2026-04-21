@@ -16,6 +16,7 @@ class Sprint1State(TypedDict, total=False):
     normalized_story: dict[str, Any]
     intake_artifact_id: str
     test_design_artifact_id: str
+    publish_warnings: Annotated[list[str], operator.add]
     approval_id: str
     approval_status: str
     errors: Annotated[list[str], operator.add]
