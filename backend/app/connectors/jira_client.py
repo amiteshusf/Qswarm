@@ -46,6 +46,8 @@ def _normalize_issue(issue_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     issuetype = fields.get("issuetype") or {}
     priority = fields.get("priority") or {}
     status = fields.get("status") or {}
+    status_category = status.get("statusCategory") or {}
+    status_category_key = status_category.get("key")
 
     return {
         "issue_key": issue_key.upper(),
@@ -55,6 +57,7 @@ def _normalize_issue(issue_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         "issue_type": issuetype.get("name"),
         "priority": priority.get("name"),
         "status": status.get("name"),
+        "status_category_key": status_category_key,
         "assignee": assignee.get("displayName") or assignee.get("emailAddress"),
         "reporter": reporter.get("displayName") or reporter.get("emailAddress"),
         "labels": list(fields.get("labels") or []),
@@ -64,6 +67,9 @@ def _normalize_issue(issue_key: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _stub_issue(issue_key: str) -> dict[str, Any]:
     key = issue_key.upper()
+    labels = ["stub", "sprint1"]
+    if key == "PICKUP-1":
+        labels = ["qswarm-test-design", "stub"]
     return {
         "issue_key": key,
         "issue_id": "stub-1001",
@@ -76,21 +82,41 @@ def _stub_issue(issue_key: str) -> dict[str, Any]:
         "issue_type": "Story",
         "priority": "Medium",
         "status": "To Do",
+        "status_category_key": "indeterminate",
         "assignee": "Unassigned",
         "reporter": "stub.user@example.com",
-        "labels": ["stub", "sprint1"],
+        "labels": labels,
         "raw_payload": {"stub": True, "key": key},
     }
 
 
 def _stub_search(jql: str, max_results: int) -> dict[str, Any]:
+    jql_l = jql.lower()
+    if "qswarm-test-design" in jql_l:
+        return {
+            "issues": [
+                {
+                    "key": "PICKUP-1",
+                    "fields": {
+                        "summary": "Stub pickup story for local JQL polling",
+                        "labels": ["qswarm-test-design"],
+                        "issuetype": {"name": "Story"},
+                        "status": {
+                            "name": "To Do",
+                            "statusCategory": {"key": "new", "name": "To Do"},
+                        },
+                    },
+                }
+            ],
+            "total": 1,
+        }
     return {
         "issues": [
             {
                 "key": "STUB-1",
                 "fields": {
                     "summary": f"Stub result for JQL: {jql[:40]}...",
-                    "status": {"name": "Open"},
+                    "status": {"name": "Open", "statusCategory": {"key": "new"}},
                 },
             }
         ],
@@ -176,17 +202,25 @@ class JiraClient:
             for item in stub.get("issues", [])[:max_results]:
                 k = item.get("key", "STUB-1")
                 fields = item.get("fields") or {}
+                st = fields.get("status") or {}
                 issues.append(
                     {
                         "issue_key": k,
                         "summary": str(fields.get("summary") or ""),
-                        "status": (fields.get("status") or {}).get("name"),
+                        "status": st.get("name"),
+                        "labels": list(fields.get("labels") or []),
+                        "issue_type": (fields.get("issuetype") or {}).get("name"),
+                        "status_category_key": (st.get("statusCategory") or {}).get("key"),
                     }
                 )
             return {"issues": issues, "total": stub.get("total")}
 
         url = f"{self._base}/rest/api/3/search"
-        body = {"jql": jql, "maxResults": max_results, "fields": ["summary", "status"]}
+        body = {
+            "jql": jql,
+            "maxResults": max_results,
+            "fields": ["summary", "status", "labels", "issuetype"],
+        }
         try:
             with httpx.Client(timeout=45.0) as client:
                 r = client.post(
@@ -221,11 +255,15 @@ class JiraClient:
         issues = []
         for item in data.get("issues") or []:
             fields = item.get("fields") or {}
+            st = fields.get("status") or {}
             issues.append(
                 {
                     "issue_key": item.get("key", ""),
                     "summary": str(fields.get("summary") or ""),
-                    "status": (fields.get("status") or {}).get("name"),
+                    "status": st.get("name"),
+                    "labels": list(fields.get("labels") or []),
+                    "issue_type": (fields.get("issuetype") or {}).get("name"),
+                    "status_category_key": (st.get("statusCategory") or {}).get("key"),
                 }
             )
         return {"issues": issues, "total": data.get("total")}

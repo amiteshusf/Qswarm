@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.deps import JiraClientDep, SettingsDep
+from app.api.deps import DbSession, JiraClientDep, SettingsDep
 from app.connectors.jira_client import JiraClientError
 from app.schemas.common import ErrorDetail, ErrorResponse
 from app.schemas.jira import (
@@ -13,6 +13,8 @@ from app.schemas.jira import (
     JiraSearchResponse,
     JiraStoryResponse,
 )
+from app.schemas.jira_pickup import JiraPickupPollRequest, JiraPickupPollResponse
+from app.services import jira_polling_service
 
 router = APIRouter(prefix="/jira", tags=["jira"])
 
@@ -163,3 +165,21 @@ def search_issues(body: JiraSearchRequest, jira: JiraClientDep):
         for x in result.get("issues") or []
     ]
     return JiraSearchResponse(issues=hits, total=result.get("total"))
+
+
+@router.post(
+    "/pickup/poll",
+    response_model=JiraPickupPollResponse,
+    summary="Manual Jira pickup poll (Sprint 1)",
+    description=(
+        "Search Jira for issues with label ``qswarm-test-design`` (Story/Task), "
+        "run preflight, create and start Sprint 1 workflow runs for eligible issues. "
+        "For controlled testing; no background scheduler."
+    ),
+)
+def jira_pickup_poll(
+    db: DbSession,
+    jira: JiraClientDep,
+    body: JiraPickupPollRequest = JiraPickupPollRequest(),
+):
+    return jira_polling_service.run_pickup_poll(db, jira, limit=body.limit)

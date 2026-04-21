@@ -26,6 +26,12 @@ class ArtifactType(StrEnum):
 
 class AuditEventType(StrEnum):
     JIRA_STORY_FETCHED = "jira_story_fetched"
+    JIRA_PICKUP_POLL_STARTED = "jira_pickup_poll_started"
+    JIRA_PICKUP_CANDIDATE_FOUND = "jira_pickup_candidate_found"
+    JIRA_PICKUP_SKIPPED = "jira_pickup_skipped"
+    JIRA_PICKUP_WORKFLOW_CREATED = "jira_pickup_workflow_created"
+    JIRA_PICKUP_WORKFLOW_STARTED = "jira_pickup_workflow_started"
+    JIRA_PICKUP_POLL_COMPLETED = "jira_pickup_poll_completed"
     WORKFLOW_STARTED = "workflow_started"
     STORY_INTAKE_CREATED = "story_intake_created"
     TEST_DESIGN_CREATED = "test_design_created"

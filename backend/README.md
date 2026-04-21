@@ -54,7 +54,24 @@ pytest tests/ -v
 4. `POST /approvals/{approval_id}/approve` or `.../reject` with `{"actor_id": "reviewer", "notes": "..."}`.  
 5. `GET /audit/workflow/{run_id}` — inspect the audit trail.
 
-Other useful endpoints: `GET /health`, `GET /jira/connection-test`, `GET /jira/issues/{issue_key}`, `GET /jira/story/{issue_key}`, `POST /jira/search`, `POST /intake/from-jira/{issue_key}`.
+Other useful endpoints: `GET /health`, `GET /health/db`, `GET /jira/connection-test`, `GET /jira/issues/{issue_key}`, `GET /jira/story/{issue_key}`, `POST /jira/search`, `POST /intake/from-jira/{issue_key}`.
+
+### Jira pickup polling (Sprint 1, manual)
+
+Sprint 1 can still be started explicitly via `POST /workflow/runs` and `POST /workflow/runs/{id}/start`. Additionally, a **label-driven pickup** path finds Jira **Story** or **Task** issues tagged for QSwarm and **creates + starts** a workflow run in one go.
+
+- **Trigger:** Jira label **`qswarm-test-design`** (not a custom workflow status—teams keep their own statuses).
+- **How it works:** `POST /jira/pickup/poll` runs a JQL search (`labels = "qswarm-test-design" AND issuetype in (Story, Task)`), applies **preflight** rules per issue, then reuses existing workflow services to create and start runs. There is **no background scheduler** in v1—call the endpoint when you want a poll.
+- **Duplicate prevention:** If a **non-terminal** workflow run already exists for the same Jira issue key (`pending`, `running`, `awaiting_approval`, or `approved`), the issue is **skipped** with reason `duplicate_active_run`. Terminal runs (`completed`, `rejected`, `failed`) do not block a new pickup.
+- **Optional fields:** Missing description or acceptance criteria in Jira does **not** block pickup; a non-empty summary (that passes a simple “not too vague” check) is enough.
+- **Skips:** Ineligible issues are listed in the JSON response with a `reason` code; pickup-related audit events are written when the audit helper is used (`jira_pickup_*` event types).
+
+**Manual test with real Jira**
+
+1. Set live Jira env vars (`JIRA_USE_STUB=false`, base URL, email, token) and restart the API.
+2. Create or pick a **Story** or **Task**, set **Summary**, ensure status is **not** in Jira’s **Done** category, and add label **`qswarm-test-design`**.
+3. `POST /jira/pickup/poll` with optional body `{"limit": 10}`.
+4. Inspect the response (`picked_up`, `skipped`, `results[]`) and `GET /workflow/runs/{id}` for a picked-up run.
 
 **Manual real Jira check:** set `JIRA_USE_STUB=false` and valid `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` in `.env`, restart the API, open `/docs`, call `GET /jira/connection-test` (uses sample issue `NSP-677`), then `GET /jira/issues/NSP-677` for a normalized issue payload (no raw Jira JSON).
 
