@@ -11,6 +11,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = Field(default="qswarm-backend", alias="APP_NAME")
@@ -99,6 +100,21 @@ class Settings(BaseSettings):
     github_default_repo_owner: str = Field(default="", alias="GITHUB_DEFAULT_REPO_OWNER")
     github_default_repo_name: str = Field(default="", alias="GITHUB_DEFAULT_REPO_NAME")
     github_api_base_url: str = Field(default="https://api.github.com", alias="GITHUB_API_BASE_URL")
+
+    # Managed workspaces for hosted session start (git clone under this root).
+    qswarm_workspace_root: str = Field(default="/tmp/qswarm", alias="QSWARM_WORKSPACE_ROOT")
+    qswarm_git_clone_timeout_seconds: int = Field(
+        default=600,
+        alias="QSWARM_GIT_CLONE_TIMEOUT_SECONDS",
+        ge=30,
+        le=7200,
+    )
+    qswarm_git_fetch_timeout_seconds: int = Field(
+        default=120,
+        alias="QSWARM_GIT_FETCH_TIMEOUT_SECONDS",
+        ge=10,
+        le=3600,
+    )
 
     @field_validator("database_url", mode="before")
     @classmethod

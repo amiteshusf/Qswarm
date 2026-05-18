@@ -12,6 +12,8 @@ from app.db.models.automation_patch_version import AutomationPatchVersion
 from app.db.models.automation_plan_version import AutomationPlanVersion
 from app.db.models.automation_revision_round import AutomationRevisionRound
 from app.db.models.automation_session import AutomationSession
+from app.services.repository_connection_service import create_repository_connection
+from app.services.repo_workspace_service import WorkspacePreparationResult
 from test_automation_jobs import (
     _patch_playwright_run_for_job_and_review,
     _playwright_fixture_repo,
@@ -262,3 +264,81 @@ def test_session_start_idempotent_conflict(client, tmp_path: Path, monkeypatch):
     assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
     st2 = client.post(f"/automation/sessions/{sid}/start", json={})
     assert st2.status_code == 409
+
+
+def test_create_session_rejects_invalid_repository_connection(client, tmp_path: Path):
+    _playwright_fixture_repo(tmp_path)
+    bad = str(uuid.uuid4())
+    r = client.post(
+        "/automation/sessions",
+        json={
+            "approved_case_id": "SESS-BAD-RC",
+            "created_by": "u",
+            "coding_engine": "stub",
+            "repo_path": str(tmp_path.resolve()),
+            "repository_connection_id": bad,
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "repository_connection_invalid"
+
+
+def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path, monkeypatch, db_session):
+    import app.services.automation_session_service as ss
+
+    conn = create_repository_connection(
+        db_session,
+        provider="github",
+        display_name="Demo",
+        owner_or_org="acme",
+        repo_name="widget",
+        created_by="u",
+    )
+    db_session.commit()
+
+    ws = tmp_path / "mat"
+    ws.mkdir(parents=True, exist_ok=True)
+    _playwright_fixture_repo(ws)
+
+    def fake_prepare(db, *, session, job, repository_connection_id=None, settings=None):
+        rp = str(ws.resolve())
+        job.repo_path = rp
+        session.repo_path = rp
+        db.flush()
+        return WorkspacePreparationResult(
+            mode="cloned_workspace",
+            workspace_path=rp,
+            clone_url_used="https://github.com/acme/widget.git",
+            provider="github",
+            target_branch="main",
+            source_reference=None,
+        )
+
+    monkeypatch.setattr(ss, "prepare_automation_session_workspace", fake_prepare)
+    monkeypatch.setattr(
+        "app.services.automation_job_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    monkeypatch.setattr(
+        "app.services.automation_review_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+
+    cr = client.post(
+        "/automation/sessions",
+        json={
+            "approved_case_id": "SESS-MAT",
+            "created_by": "runner",
+            "coding_engine": "stub",
+            "repository_connection_id": str(conn.id),
+            "case_title": "T",
+            "steps": ["open"],
+        },
+    )
+    assert cr.status_code == 201, cr.text
+    assert cr.json().get("repository_connection_id") == str(conn.id)
+    sid = uuid.UUID(cr.json()["id"])
+    jid = uuid.UUID(cr.json()["automation_job_id"])
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+    job = db_session.get(AutomationJob, jid)
+    assert job.repo_path == str(ws.resolve())

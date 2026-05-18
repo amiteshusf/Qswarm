@@ -15,6 +15,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.db.models.automation_job import AutomationJob
     from app.db.models.automation_execution_attempt import AutomationExecutionAttempt
+    from app.db.models.repository_connection import RepositoryConnection
     from app.db.models.automation_patch_version import AutomationPatchVersion
     from app.db.models.automation_plan_version import AutomationPlanVersion
     from app.db.models.automation_revision_round import AutomationRevisionRound
@@ -35,6 +36,11 @@ class AutomationSession(Base):
     repo_owner: Mapped[str | None] = mapped_column(String(256), nullable=True)
     repo_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     repo_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    repository_connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("repository_connections.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     base_branch: Mapped[str] = mapped_column(String(256), default="main", nullable=False)
     coding_engine: Mapped[str] = mapped_column(String(64), default="stub", nullable=False)
     status: Mapped[str] = mapped_column(
@@ -53,6 +59,10 @@ class AutomationSession(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
+    repository_connection: Mapped["RepositoryConnection | None"] = relationship(
+        "RepositoryConnection",
+        foreign_keys=[repository_connection_id],
+    )
     automation_job: Mapped["AutomationJob | None"] = relationship(
         "AutomationJob", back_populates="automation_session", foreign_keys=[automation_job_id]
     )

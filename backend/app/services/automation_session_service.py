@@ -18,6 +18,7 @@ from app.automation_engine.engine_errors import (
     EngineTimeoutError,
 )
 from app.automation_engine.registry import resolve_coding_agent_adapter
+from app.core.config import get_settings
 from app.core.constants import (
     ActorType,
     AuditEventType,
@@ -41,6 +42,8 @@ from app.services.automation_job_service import ChangePlanRejected, PatchRejecte
 from app.services.automation_engine_payload_builder import AutomationEnginePayloadBuilder
 from app.services.execution_service import resolve_target_test_file
 from app.services.framework_scan_service import FrameworkScanError
+from app.services.repository_connection_service import get_repository_connection
+from app.services.repo_workspace_service import prepare_automation_session_workspace
 
 
 def _map_job_status_to_session(job_status: str) -> AutomationSessionStatus:
@@ -227,12 +230,27 @@ def create_automation_session(db: Session, body: AutomationSessionCreateRequest)
     except ValueError as e:
         raise ValueError(str(e)) from e
 
+    if body.repository_connection_id is not None:
+        rc = get_repository_connection(db, body.repository_connection_id)
+        if rc is None or not rc.is_active:
+            raise ValueError("repository_connection_invalid")
+    else:
+        rc = None
+
+    ro = (body.repo_owner or "").strip() or None
+    rn = (body.repo_name or "").strip() or None
+    if rc is not None:
+        if not ro:
+            ro = (rc.owner_or_org or "").strip() or None
+        if not rn:
+            rn = (rc.repo_name or "").strip() or None
+
     job_body = AutomationJobCreateRequest(
         approved_case_id=body.approved_case_id,
         requested_by=body.created_by,
         repo_id=body.repo_id,
-        repo_owner=body.repo_owner,
-        repo_name=body.repo_name,
+        repo_owner=ro,
+        repo_name=rn,
         repo_path=body.repo_path,
         base_branch=body.base_branch,
         workflow_run_id=body.workflow_run_id,
@@ -258,6 +276,7 @@ def create_automation_session(db: Session, body: AutomationSessionCreateRequest)
         approved_case_id=job.approved_case_id,
         workflow_run_id=body.workflow_run_id,
         created_by=body.created_by.strip(),
+        repository_connection_id=body.repository_connection_id,
     )
     db.add(sess)
     db.flush()
@@ -296,6 +315,9 @@ def session_to_summary(db: Session, session: AutomationSession) -> dict[str, Any
         "repo_owner": session.repo_owner,
         "repo_name": session.repo_name,
         "repo_path": session.repo_path,
+        "repository_connection_id": str(session.repository_connection_id)
+        if session.repository_connection_id
+        else None,
         "base_branch": session.base_branch,
         "coding_engine": session.coding_engine,
         "status": effective_status,
@@ -309,7 +331,13 @@ def session_to_summary(db: Session, session: AutomationSession) -> dict[str, Any
     }
 
 
-def start_automation_session(db: Session, session_id: uuid.UUID, *, actor_id: str | None = None) -> AutomationSession:
+def start_automation_session(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str | None = None,
+    repository_connection_id: uuid.UUID | None = None,
+) -> AutomationSession:
     session = db.get(AutomationSession, session_id)
     if session is None:
         raise ValueError("session_not_found")
@@ -326,6 +354,14 @@ def start_automation_session(db: Session, session_id: uuid.UUID, *, actor_id: st
     aid = (actor_id or session.created_by or "").strip()
     if not aid:
         raise ValueError("actor_missing")
+
+    prepare_automation_session_workspace(
+        db,
+        session=session,
+        job=job,
+        repository_connection_id=repository_connection_id,
+        settings=get_settings(),
+    )
 
     adapter = resolve_coding_agent_adapter(session.coding_engine)
     rnd = AutomationRevisionRound(

@@ -29,6 +29,10 @@ class AutomationSessionCreateRequest(BaseModel):
     preconditions: list[str] | None = None
     steps: list[str] | None = None
     expected_results: list[str] | None = None
+    repository_connection_id: uuid.UUID | None = Field(
+        default=None,
+        description="Optional saved link to RepositoryConnection for hosted workspace clone on start.",
+    )
 
 
 class AutomationSessionSummaryResponse(BaseModel):
@@ -39,6 +43,7 @@ class AutomationSessionSummaryResponse(BaseModel):
     repo_owner: str | None
     repo_name: str | None
     repo_path: str | None
+    repository_connection_id: str | None = None
     base_branch: str
     coding_engine: str
     status: str
@@ -53,6 +58,10 @@ class AutomationSessionSummaryResponse(BaseModel):
 
 class AutomationSessionStartRequest(BaseModel):
     actor_id: str | None = Field(default=None, max_length=256)
+    repository_connection_id: uuid.UUID | None = Field(
+        default=None,
+        description="Overrides session.repository_connection_id for this start (clone source).",
+    )
 
 
 class AutomationSessionStartResponse(BaseModel):

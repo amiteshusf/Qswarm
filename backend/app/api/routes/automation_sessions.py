@@ -38,6 +38,7 @@ from app.schemas.common import ErrorDetail, ErrorResponse
 from app.services import automation_pr_service, automation_session_service
 from app.services.automation_job_service import ChangePlanRejected, PatchRejected, WorkspaceApplyRejected
 from app.services.framework_scan_service import FrameworkScanError
+from app.services.repo_workspace_service import RepoAuthError, RepoWorkspaceError
 from app.source_control.errors import (
     SourceControlAuthError,
     SourceControlConfigurationError,
@@ -83,6 +84,14 @@ def create_session(body: AutomationSessionCreateRequest, db: DbSession):
                 detail=ErrorDetail(
                     code="invalid_reference",
                     message="workflow_run_id does not exist",
+                ).model_dump(),
+            ) from e
+        if msg == "repository_connection_invalid":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorDetail(
+                    code="repository_connection_invalid",
+                    message="repository_connection_id is missing, inactive, or unknown",
                 ).model_dump(),
             ) from e
         raise
@@ -194,6 +203,7 @@ def list_review_requests(session_id: uuid.UUID, db: DbSession):
     response_model=AutomationSessionStartResponse,
     responses={
         400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
         409: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
@@ -212,18 +222,30 @@ def start_session(
             detail=ErrorDetail(code="not_found", message="Automation session not found").model_dump(),
         )
     actor = (body.actor_id if body else None) or None
+    repo_conn = body.repository_connection_id if body else None
     try:
-        sess = automation_session_service.start_automation_session(db, session_id, actor_id=actor)
-    except EngineConfigurationError as e:
+        sess = automation_session_service.start_automation_session(
+            db, session_id, actor_id=actor, repository_connection_id=repo_conn
+        )
+    except RepoAuthError as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ErrorDetail(code=e.code, message=e.message).model_dump(),
+        ) from e
+    except RepoWorkspaceError as e:
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ErrorDetail(
-                code="engine_configuration",
-                message=e.message,
-            ).model_dump(),
+            detail=ErrorDetail(code=e.code, message=e.message).model_dump(),
         ) from e
     except FrameworkScanError as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorDetail(code=e.code, message=e.message).model_dump(),
+        ) from e
+    except EngineConfigurationError as e:
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
