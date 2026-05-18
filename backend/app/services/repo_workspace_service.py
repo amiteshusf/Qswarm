@@ -9,7 +9,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.orm import Session
@@ -60,6 +60,38 @@ class WorkspacePreparationResult:
     target_branch: str
     source_reference: str | None
     notes: str | None = None
+
+
+WorkspaceBootstrapProfile = Literal["hosted_materialized", "local_existing"]
+
+
+def resolve_workspace_bootstrap_profile(
+    session: AutomationSession,
+    job: AutomationJob,
+    *,
+    prep: WorkspacePreparationResult | None,
+    settings: Settings | None = None,
+) -> WorkspaceBootstrapProfile:
+    """
+    Decide npm bootstrap strictness.
+
+    ``hosted_materialized`` applies when the workspace was just cloned **or** the resolved
+    ``repo_path`` is the managed session directory (never treat as a casual local skip).
+    """
+    s = settings or get_settings()
+    if prep is not None and prep.mode == "cloned_workspace":
+        return "hosted_materialized"
+    rp_s = (job.repo_path or session.repo_path or "").strip()
+    if not rp_s:
+        return "local_existing"
+    try:
+        rp = Path(rp_s).resolve()
+        managed = session_repo_workspace_path(session.id, s.qswarm_workspace_root).resolve()
+        if rp == managed:
+            return "hosted_materialized"
+    except OSError:
+        return "local_existing"
+    return "local_existing"
 
 
 def session_repo_workspace_path(session_id: uuid.UUID, workspace_root: str | Path) -> Path:

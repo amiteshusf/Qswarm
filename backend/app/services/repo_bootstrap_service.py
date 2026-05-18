@@ -80,6 +80,11 @@ def _select_npm_command(workspace: Path) -> tuple[list[str] | None, str]:
     return (None, "none")
 
 
+def planned_npm_bootstrap_command(workspace: Path) -> tuple[list[str] | None, str]:
+    """Return the npm argv that :func:`bootstrap_node_workspace` would run, if any."""
+    return _select_npm_command(workspace.resolve())
+
+
 def _ensure_npm_available(
     workspace: Path,
     *,
@@ -116,6 +121,15 @@ def bootstrap_node_workspace(
 
     cmd, stack = _select_npm_command(ws)
     if cmd is None:
+        logger.info(
+            "repo_bootstrap_skipped",
+            extra={
+                "workspace": str(ws),
+                "profile": workspace_profile,
+                "reason": "no_npm_manifest",
+                "detected_stack": stack,
+            },
+        )
         return RepoBootstrapResult(
             detected_stack=stack,
             bootstrap_required=False,
@@ -130,6 +144,16 @@ def bootstrap_node_workspace(
 
     if workspace_profile == "local_existing" and s.qswarm_skip_bootstrap_if_node_modules:
         if _node_modules_nonempty(ws):
+            logger.info(
+                "repo_bootstrap_skipped",
+                extra={
+                    "workspace": str(ws),
+                    "profile": workspace_profile,
+                    "reason": "local_existing_node_modules_nonempty",
+                    "detected_stack": stack,
+                    "qswarm_skip_bootstrap_if_node_modules": True,
+                },
+            )
             return RepoBootstrapResult(
                 detected_stack=stack,
                 bootstrap_required=False,
@@ -142,6 +166,7 @@ def bootstrap_node_workspace(
                 notes="local_existing profile: node_modules present; bootstrap skipped.",
             )
 
+    # hosted_materialized: never skip npm based on node_modules — stale/partial installs must be refreshed.
     _ensure_npm_available(ws, subprocess_runner=subprocess_runner)
 
     run = subprocess_runner or run_subprocess_argv

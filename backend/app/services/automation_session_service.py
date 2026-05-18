@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -46,13 +47,18 @@ from app.services.framework_scan_service import FrameworkScanError
 from app.services.repository_connection_service import get_repository_connection
 from app.services.repo_bootstrap_service import (
     RepoBootstrapError,
+    WorkspaceProfile,
     bootstrap_node_workspace,
     bootstrap_result_to_audit_payload,
+    planned_npm_bootstrap_command,
 )
-from app.services.repo_workspace_service import prepare_automation_session_workspace
+from app.services.repo_workspace_service import (
+    prepare_automation_session_workspace,
+    resolve_workspace_bootstrap_profile,
+)
 
 
-WorkspaceProfile = Literal["hosted_materialized", "local_existing"]
+logger = logging.getLogger(__name__)
 
 
 def _run_repo_bootstrap_for_session(
@@ -62,13 +68,50 @@ def _run_repo_bootstrap_for_session(
     job: AutomationJob,
     actor_id: str,
     workspace_profile: WorkspaceProfile,
+    prep_mode: str | None = None,
 ) -> None:
     rp = (job.repo_path or session.repo_path or "").strip()
     if not rp:
-        return
+        raise RepoBootstrapError(
+            "Workspace path is missing after preparation; dependency bootstrap cannot run "
+            "and execution must not proceed.",
+            code="repo_bootstrap_workspace_path_missing",
+        )
+    root = Path(rp)
+    planned_cmd, stack = planned_npm_bootstrap_command(root)
+    logger.info(
+        "repo_bootstrap_gate",
+        extra={
+            "automation_job_id": str(job.id),
+            "automation_session_id": str(session.id),
+            "workspace_profile": workspace_profile,
+            "workspace_path": rp,
+            "prep_mode": prep_mode,
+            "detected_stack": stack,
+            "planned_command": planned_cmd,
+        },
+    )
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP_STARTED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=(actor_id or "system")[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="repo_bootstrap",
+        entity_type="automation_job",
+        entity_id=str(job.id),
+        payload={
+            "workspace_path": rp,
+            "workspace_profile": workspace_profile,
+            "prep_mode": prep_mode,
+            "detected_stack": stack,
+            "planned_command": planned_cmd,
+        },
+    )
+    db.flush()
     try:
         res = bootstrap_node_workspace(
-            Path(rp),
+            root,
             workspace_profile=workspace_profile,
             settings=get_settings(),
         )
@@ -84,6 +127,17 @@ def _run_repo_bootstrap_for_session(
             payload=bootstrap_result_to_audit_payload(res),
         )
         db.flush()
+        logger.info(
+            "repo_bootstrap_finished",
+            extra={
+                "automation_job_id": str(job.id),
+                "workspace_profile": workspace_profile,
+                "bootstrap_required": res.bootstrap_required,
+                "command": res.command,
+                "success": res.success,
+                "notes": res.notes,
+            },
+        )
     except RepoBootstrapError as e:
         audit_service.write_audit(
             db,
@@ -97,6 +151,10 @@ def _run_repo_bootstrap_for_session(
             payload={"success": False, "code": e.code, "message": e.message[:4000]},
         )
         db.flush()
+        logger.warning(
+            "repo_bootstrap_failed",
+            extra={"automation_job_id": str(job.id), "code": e.code, "workspace_profile": workspace_profile},
+        )
         raise
 
 
@@ -416,11 +474,14 @@ def start_automation_session(
         repository_connection_id=repository_connection_id,
         settings=get_settings(),
     )
-    profile: WorkspaceProfile = (
-        "hosted_materialized" if prep.mode == "cloned_workspace" else "local_existing"
-    )
+    profile = resolve_workspace_bootstrap_profile(session, job, prep=prep, settings=get_settings())
     _run_repo_bootstrap_for_session(
-        db, session=session, job=job, actor_id=aid, workspace_profile=profile
+        db,
+        session=session,
+        job=job,
+        actor_id=aid,
+        workspace_profile=profile,
+        prep_mode=prep.mode,
     )
 
     adapter = resolve_coding_agent_adapter(session.coding_engine)
@@ -625,7 +686,10 @@ def request_session_revision(
             session=session,
             job=job,
             actor_id=actor_id.strip(),
-            workspace_profile="local_existing",
+            workspace_profile=resolve_workspace_bootstrap_profile(
+                session, job, prep=None, settings=get_settings()
+            ),
+            prep_mode=None,
         )
         adapter.run_revision_request(req, context=ctx)
     except (
@@ -742,7 +806,10 @@ def acknowledge_session_manual_edit(
             session=session,
             job=job,
             actor_id=actor_id.strip(),
-            workspace_profile="local_existing",
+            workspace_profile=resolve_workspace_bootstrap_profile(
+                session, job, prep=None, settings=get_settings()
+            ),
+            prep_mode=None,
         )
         adapter.run_manual_rerun_request(req, context=ctx)
     except RepoBootstrapError:

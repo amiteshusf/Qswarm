@@ -19,7 +19,9 @@ from app.services.repo_workspace_service import (
     RepoCheckoutError,
     RepoCloneError,
     RepoWorkspacePreparationError,
+    WorkspacePreparationResult,
     prepare_automation_session_workspace,
+    resolve_workspace_bootstrap_profile,
     session_repo_workspace_path,
 )
 
@@ -28,6 +30,52 @@ def test_session_repo_workspace_path_deterministic():
     sid = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
     p = session_repo_workspace_path(sid, "/tmp/qswarm")
     assert str(p) == f"/tmp/qswarm/sessions/{sid}/repo"
+
+
+def test_resolve_workspace_bootstrap_profile_managed_path_is_hosted_even_if_existing_path(
+    db_session, tmp_path: Path
+):
+    """Hosted materialized workspaces must not be treated as casual local_existing skips."""
+    sid = uuid.UUID("bbbbbbbb-2222-3333-4444-cccccccccccc")
+    settings = Settings(qswarm_workspace_root=str(tmp_path))
+    managed = session_repo_workspace_path(sid, settings.qswarm_workspace_root)
+    managed.mkdir(parents=True, exist_ok=True)
+    (managed / ".gitkeep").write_text("")
+
+    job = AutomationJob(
+        approved_case_id="c-managed",
+        requested_by="u",
+        repo_path=str(managed.resolve()),
+        base_branch="main",
+    )
+    sess = AutomationSession(
+        id=sid,
+        automation_job_id=None,
+        repo_path=str(managed.resolve()),
+        base_branch="main",
+        coding_engine="stub",
+        status="pending",
+        current_round_number=0,
+        created_by="u",
+    )
+    db_session.add(job)
+    db_session.flush()
+    sess.automation_job_id = job.id
+    db_session.add(sess)
+    db_session.flush()
+
+    prep = WorkspacePreparationResult(
+        mode="existing_path",
+        workspace_path=str(managed.resolve()),
+        clone_url_used=None,
+        provider="github",
+        target_branch="main",
+        source_reference=None,
+    )
+    assert (
+        resolve_workspace_bootstrap_profile(sess, job, prep=prep, settings=settings)
+        == "hosted_materialized"
+    )
 
 
 def test_existing_repo_path_local_mode(db_session, tmp_path: Path):

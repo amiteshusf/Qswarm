@@ -285,6 +285,8 @@ def test_create_session_rejects_invalid_repository_connection(client, tmp_path: 
 
 def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path, monkeypatch, db_session):
     import app.services.automation_session_service as ss
+    from app.core.config import Settings
+    from app.services.repo_bootstrap_service import bootstrap_node_workspace as real_bootstrap
 
     conn = create_repository_connection(
         db_session,
@@ -299,6 +301,20 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
     ws = tmp_path / "mat"
     ws.mkdir(parents=True, exist_ok=True)
     _playwright_fixture_repo(ws)
+
+    npm_calls: list[list[str]] = []
+
+    def fake_bootstrap(workspace, *, workspace_profile, settings=None, subprocess_runner=None):
+        def fake_run(argv, *, cwd, timeout_seconds, env=None):
+            npm_calls.append(list(argv))
+            return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+        return real_bootstrap(
+            workspace,
+            workspace_profile=workspace_profile,
+            settings=settings or Settings(qswarm_bootstrap_timeout_seconds=120),
+            subprocess_runner=fake_run,
+        )
 
     def fake_prepare(db, *, session, job, repository_connection_id=None, settings=None):
         rp = str(ws.resolve())
@@ -315,7 +331,7 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
         )
 
     monkeypatch.setattr(ss, "prepare_automation_session_workspace", fake_prepare)
-    monkeypatch.setattr(ss, "_run_repo_bootstrap_for_session", lambda *a, **k: None)
+    monkeypatch.setattr(ss, "bootstrap_node_workspace", fake_bootstrap)
     monkeypatch.setattr(
         "app.services.automation_job_service.run_playwright_execution_for_job",
         _stub_execution_run_factory(),
@@ -343,17 +359,25 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
     assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
     job = db_session.get(AutomationJob, jid)
     assert job.repo_path == str(ws.resolve())
+    assert any(c[:2] == ["npm", "ci"] for c in npm_calls), "hosted clone must run npm ci before execution"
 
 
 def test_session_start_invokes_bootstrap(client, tmp_path: Path, monkeypatch, db_session):
     import app.services.automation_session_service as mod
 
-    profiles: list[str] = []
+    profiles: list[tuple[str, str | None]] = []
     orig = mod._run_repo_bootstrap_for_session
 
-    def wrap(db, *, session, job, actor_id, workspace_profile):
-        profiles.append(workspace_profile)
-        return orig(db, session=session, job=job, actor_id=actor_id, workspace_profile=workspace_profile)
+    def wrap(db, *, session, job, actor_id, workspace_profile, prep_mode=None):
+        profiles.append((workspace_profile, prep_mode))
+        return orig(
+            db,
+            session=session,
+            job=job,
+            actor_id=actor_id,
+            workspace_profile=workspace_profile,
+            prep_mode=prep_mode,
+        )
 
     monkeypatch.setattr(mod, "_run_repo_bootstrap_for_session", wrap)
     monkeypatch.setattr(
@@ -367,4 +391,92 @@ def test_session_start_invokes_bootstrap(client, tmp_path: Path, monkeypatch, db
     data = _create_session(client, tmp_path, case_id="SESS-BOOT-CALL")
     sid = uuid.UUID(data["id"])
     assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
-    assert profiles == ["local_existing"]
+    assert profiles == [("local_existing", "existing_path")]
+
+
+def test_session_start_bootstrap_failure_returns_400_and_skips_execution(
+    client, tmp_path: Path, monkeypatch, db_session
+):
+    import app.services.automation_session_service as mod
+    from app.services.repo_bootstrap_service import RepoBootstrapError
+
+    exec_calls: list[uuid.UUID] = []
+
+    def track_execute(db, job_id, *, actor_id=None):
+        exec_calls.append(job_id)
+
+    def fail_bootstrap(*args, **kwargs):
+        raise RepoBootstrapError("simulated npm failure", code="repo_bootstrap_failed")
+
+    monkeypatch.setattr(mod, "bootstrap_node_workspace", fail_bootstrap)
+    monkeypatch.setattr("app.services.automation_job_service.execute_automation_job", track_execute)
+
+    data = _create_session(client, tmp_path, case_id="SESS-BOOT-FAIL")
+    sid = uuid.UUID(data["id"])
+    r = client.post(f"/automation/sessions/{sid}/start", json={})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "repo_bootstrap_failed"
+    assert exec_calls == []
+
+    n_rounds = db_session.scalar(
+        select(func.count()).select_from(AutomationRevisionRound).where(
+            AutomationRevisionRound.automation_session_id == sid
+        )
+    )
+    assert int(n_rounds or 0) == 0
+
+
+def test_session_start_writes_bootstrap_started_and_success_audit(
+    client, tmp_path: Path, monkeypatch, db_session
+):
+    monkeypatch.setattr(
+        "app.services.automation_job_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    monkeypatch.setattr(
+        "app.services.automation_review_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    data = _create_session(client, tmp_path, case_id="SESS-BOOT-AUD")
+    sid = uuid.UUID(data["id"])
+    jid = uuid.UUID(data["automation_job_id"])
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+
+    logs = db_session.scalars(
+        select(AuditLog)
+        .where(AuditLog.entity_id == str(jid), AuditLog.step_name == "repo_bootstrap")
+        .order_by(AuditLog.created_at)
+    ).all()
+    et = [x.event_type for x in logs]
+    assert AuditEventType.AUTOMATION_REPO_BOOTSTRAP_STARTED.value in et
+    fin = [x for x in logs if x.event_type == AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value]
+    assert fin, "expected completion audit for repo bootstrap"
+    assert fin[-1].event_payload_json.get("success") is True
+
+
+def test_session_start_bootstrap_failure_audit_records_failure_payload(
+    client, tmp_path: Path, monkeypatch, db_session
+):
+    import app.services.automation_session_service as mod
+    from app.services.repo_bootstrap_service import RepoBootstrapError
+
+    def fail_bootstrap(*args, **kwargs):
+        raise RepoBootstrapError("simulated", code="repo_bootstrap_failed")
+
+    monkeypatch.setattr(mod, "bootstrap_node_workspace", fail_bootstrap)
+
+    data = _create_session(client, tmp_path, case_id="SESS-BOOT-AUD-FAIL")
+    sid = uuid.UUID(data["id"])
+    jid = uuid.UUID(data["automation_job_id"])
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 400
+
+    logs = db_session.scalars(
+        select(AuditLog)
+        .where(AuditLog.entity_id == str(jid), AuditLog.step_name == "repo_bootstrap")
+        .order_by(AuditLog.created_at)
+    ).all()
+    et = [x.event_type for x in logs]
+    assert AuditEventType.AUTOMATION_REPO_BOOTSTRAP_STARTED.value in et
+    fin = [x for x in logs if x.event_type == AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value]
+    assert fin[-1].event_payload_json.get("success") is False
+    assert fin[-1].event_payload_json.get("code") == "repo_bootstrap_failed"
