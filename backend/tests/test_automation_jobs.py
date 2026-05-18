@@ -16,6 +16,9 @@ def _playwright_fixture_repo(root: Path) -> None:
     (root / "playwright.config.ts").write_text("export default {};\n")
     (root / "package.json").write_text('{"devDependencies":{"@playwright/test":"^1.0.0"}}')
     (root / "package-lock.json").write_text("{}")
+    nm = root / "node_modules"
+    nm.mkdir(exist_ok=True)
+    (nm / ".qswarm_test_stub").write_text("1")
     d = root / "tests"
     d.mkdir()
     (d / "smoke.spec.ts").write_text("// test\n")

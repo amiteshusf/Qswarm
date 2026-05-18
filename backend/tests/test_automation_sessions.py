@@ -315,6 +315,7 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
         )
 
     monkeypatch.setattr(ss, "prepare_automation_session_workspace", fake_prepare)
+    monkeypatch.setattr(ss, "_run_repo_bootstrap_for_session", lambda *a, **k: None)
     monkeypatch.setattr(
         "app.services.automation_job_service.run_playwright_execution_for_job",
         _stub_execution_run_factory(),
@@ -342,3 +343,28 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
     assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
     job = db_session.get(AutomationJob, jid)
     assert job.repo_path == str(ws.resolve())
+
+
+def test_session_start_invokes_bootstrap(client, tmp_path: Path, monkeypatch, db_session):
+    import app.services.automation_session_service as mod
+
+    profiles: list[str] = []
+    orig = mod._run_repo_bootstrap_for_session
+
+    def wrap(db, *, session, job, actor_id, workspace_profile):
+        profiles.append(workspace_profile)
+        return orig(db, session=session, job=job, actor_id=actor_id, workspace_profile=workspace_profile)
+
+    monkeypatch.setattr(mod, "_run_repo_bootstrap_for_session", wrap)
+    monkeypatch.setattr(
+        "app.services.automation_job_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    monkeypatch.setattr(
+        "app.services.automation_review_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    data = _create_session(client, tmp_path, case_id="SESS-BOOT-CALL")
+    sid = uuid.UUID(data["id"])
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+    assert profiles == ["local_existing"]

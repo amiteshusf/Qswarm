@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -43,7 +44,60 @@ from app.services.automation_engine_payload_builder import AutomationEnginePaylo
 from app.services.execution_service import resolve_target_test_file
 from app.services.framework_scan_service import FrameworkScanError
 from app.services.repository_connection_service import get_repository_connection
+from app.services.repo_bootstrap_service import (
+    RepoBootstrapError,
+    bootstrap_node_workspace,
+    bootstrap_result_to_audit_payload,
+)
 from app.services.repo_workspace_service import prepare_automation_session_workspace
+
+
+WorkspaceProfile = Literal["hosted_materialized", "local_existing"]
+
+
+def _run_repo_bootstrap_for_session(
+    db: Session,
+    *,
+    session: AutomationSession,
+    job: AutomationJob,
+    actor_id: str,
+    workspace_profile: WorkspaceProfile,
+) -> None:
+    rp = (job.repo_path or session.repo_path or "").strip()
+    if not rp:
+        return
+    try:
+        res = bootstrap_node_workspace(
+            Path(rp),
+            workspace_profile=workspace_profile,
+            settings=get_settings(),
+        )
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=(actor_id or "system")[:256],
+            workflow_run_id=session.workflow_run_id,
+            step_name="repo_bootstrap",
+            entity_type="automation_job",
+            entity_id=str(job.id),
+            payload=bootstrap_result_to_audit_payload(res),
+        )
+        db.flush()
+    except RepoBootstrapError as e:
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=(actor_id or "system")[:256],
+            workflow_run_id=session.workflow_run_id,
+            step_name="repo_bootstrap",
+            entity_type="automation_job",
+            entity_id=str(job.id),
+            payload={"success": False, "code": e.code, "message": e.message[:4000]},
+        )
+        db.flush()
+        raise
 
 
 def _map_job_status_to_session(job_status: str) -> AutomationSessionStatus:
@@ -355,12 +409,18 @@ def start_automation_session(
     if not aid:
         raise ValueError("actor_missing")
 
-    prepare_automation_session_workspace(
+    prep = prepare_automation_session_workspace(
         db,
         session=session,
         job=job,
         repository_connection_id=repository_connection_id,
         settings=get_settings(),
+    )
+    profile: WorkspaceProfile = (
+        "hosted_materialized" if prep.mode == "cloned_workspace" else "local_existing"
+    )
+    _run_repo_bootstrap_for_session(
+        db, session=session, job=job, actor_id=aid, workspace_profile=profile
     )
 
     adapter = resolve_coding_agent_adapter(session.coding_engine)
@@ -560,8 +620,16 @@ def request_session_revision(
         revision_round=rnd,
     )
     try:
+        _run_repo_bootstrap_for_session(
+            db,
+            session=session,
+            job=job,
+            actor_id=actor_id.strip(),
+            workspace_profile="local_existing",
+        )
         adapter.run_revision_request(req, context=ctx)
     except (
+        RepoBootstrapError,
         EngineConfigurationError,
         EngineTimeoutError,
         EngineRepoAccessError,
@@ -668,7 +736,22 @@ def acknowledge_session_manual_edit(
         actor_id=actor_id.strip(),
         revision_round=rnd,
     )
-    adapter.run_manual_rerun_request(req, context=ctx)
+    try:
+        _run_repo_bootstrap_for_session(
+            db,
+            session=session,
+            job=job,
+            actor_id=actor_id.strip(),
+            workspace_profile="local_existing",
+        )
+        adapter.run_manual_rerun_request(req, context=ctx)
+    except RepoBootstrapError:
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = "failed"
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
     db.refresh(job)
 
     rr.status = AutomationReviewRequestStatus.APPLIED.value

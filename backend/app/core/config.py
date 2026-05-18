@@ -116,6 +116,19 @@ class Settings(BaseSettings):
         le=3600,
     )
 
+    # npm ci / npm install after clone (session start) and optional revision paths.
+    qswarm_bootstrap_timeout_seconds: int = Field(
+        default=600,
+        alias="QSWARM_BOOTSTRAP_TIMEOUT_SECONDS",
+        ge=30,
+        le=7200,
+    )
+    qswarm_skip_bootstrap_if_node_modules: bool = Field(
+        default=True,
+        alias="QSWARM_SKIP_BOOTSTRAP_IF_NODE_MODULES",
+        description="When true, local_existing profile skips npm if node_modules is already populated.",
+    )
+
     @field_validator("database_url", mode="before")
     @classmethod
     def coerce_database_url(cls, v: str) -> str:
