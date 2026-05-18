@@ -37,6 +37,55 @@ class Settings(BaseSettings):
     # coding / change planning (stub | codex later)
     coding_provider: str = Field(default="stub", alias="CODING_PROVIDER")
 
+    # Sprint 2 Phase 2 — Claude Code CLI (subprocess). See README for setup.
+    qswarm_claude_code_enabled: bool = Field(default=False, alias="QSWARM_CLAUDE_CODE_ENABLED")
+    qswarm_claude_code_command: str = Field(
+        default="claude",
+        alias="QSWARM_CLAUDE_CODE_COMMAND",
+        description="Binary name or absolute path for the Claude Code CLI (no shell).",
+    )
+    qswarm_claude_code_extra_args: str = Field(
+        default="",
+        alias="QSWARM_CLAUDE_CODE_EXTRA_ARGS",
+        description="Extra argv tokens (shlex-split), e.g. --verbose before the prompt flag.",
+    )
+    qswarm_claude_code_working_mode: str = Field(
+        default="one_shot",
+        alias="QSWARM_CLAUDE_CODE_WORKING_MODE",
+        description="Reserved for future multi-step modes; currently informational only.",
+    )
+    qswarm_claude_code_allow_revision: bool = Field(
+        default=True,
+        alias="QSWARM_CLAUDE_CODE_ALLOW_REVISION",
+    )
+    qswarm_claude_code_timeout_seconds: int = Field(
+        default=600,
+        alias="QSWARM_CLAUDE_CODE_TIMEOUT_SECONDS",
+        ge=10,
+        le=7200,
+    )
+    qswarm_copilot_agent_enabled: bool = Field(default=False, alias="QSWARM_COPILOT_AGENT_ENABLED")
+    qswarm_copilot_agent_command: str = Field(
+        default="copilot",
+        alias="QSWARM_COPILOT_AGENT_COMMAND",
+        description="Binary name or absolute path for GitHub Copilot CLI (no shell).",
+    )
+    qswarm_copilot_agent_extra_args: str = Field(
+        default="",
+        alias="QSWARM_COPILOT_AGENT_EXTRA_ARGS",
+        description="Extra argv tokens (shlex-split) before the prompt flag, e.g. gh copilot --.",
+    )
+    qswarm_copilot_agent_allow_revision: bool = Field(
+        default=True,
+        alias="QSWARM_COPILOT_AGENT_ALLOW_REVISION",
+    )
+    qswarm_copilot_agent_timeout_seconds: int = Field(
+        default=600,
+        alias="QSWARM_COPILOT_AGENT_TIMEOUT_SECONDS",
+        ge=10,
+        le=7200,
+    )
+
     # Playwright subprocess run (seconds)
     playwright_execution_timeout_seconds: int = Field(
         default=120,

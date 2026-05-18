@@ -31,14 +31,17 @@ from app.services.change_planning_service import (
     PlanningValidationError,
     create_validated_change_plan,
 )
-from app.services.code_generation_service import run_code_generation_and_apply
-from app.services.patch_validation_service import PatchValidationError
-from app.services.repo_context_service import RepoContextError, collect_repo_context
+from app.services.code_generation_service import (
+    run_code_generation_and_apply,
+    validate_apply_and_summarize_generated_patch,
+)
 from app.services.execution_service import (
     execution_prerequisites_met,
     resolve_target_test_file,
     run_playwright_execution_for_job,
 )
+from app.services.patch_validation_service import PatchValidationError
+from app.services.repo_context_service import RepoContextError, collect_repo_context
 from app.services.automation_review_service import (
     apply_review_revision_and_execute,
     rerun_execution_after_manual_ack,
@@ -509,6 +512,101 @@ def generate_code_for_automation_job(
     return job
 
 
+def generate_code_from_external_patch(
+    db: Session,
+    job_id: uuid.UUID,
+    raw_patch: dict[str, Any],
+    *,
+    actor_id: str,
+    provider_label: str = "claude_code",
+) -> AutomationJob:
+    """
+    Like :func:`generate_code_for_automation_job` but applies a caller-supplied ``raw_patch``
+    (already reflected on disk for path/content consistency) after validation.
+    """
+    job = db.get(AutomationJob, job_id)
+    if job is None:
+        raise ValueError("job_not_found")
+    if job.status != AutomationJobStatus.GENERATING_CODE.value:
+        raise ValueError("job_not_generate_ready")
+    if not _generation_prerequisites_met(job):
+        raise ValueError("generation_prerequisites_missing")
+
+    aid = actor_id.strip() or job.requested_by
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_CODE_GENERATION_STARTED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=aid,
+        workflow_run_id=job.workflow_run_id,
+        step_name="code_generation",
+        entity_type="automation_job",
+        entity_id=str(job.id),
+        payload={"source": "external_patch"},
+    )
+    db.flush()
+
+    try:
+        summary = validate_apply_and_summarize_generated_patch(
+            job, raw_patch, provider_name=provider_label
+        )
+    except PatchValidationError as e:
+        msg = (e.message or "patch_validation_failed")[:2048]
+        job.status = AutomationJobStatus.FAILED.value
+        job.blocked_reason = msg
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_PATCH_VALIDATION_FAILED.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=aid,
+            workflow_run_id=job.workflow_run_id,
+            step_name="code_generation",
+            entity_type="automation_job",
+            entity_id=str(job.id),
+            payload={"message": msg, "source": "external_patch"},
+        )
+        db.flush()
+        raise PatchRejected(msg) from e
+    except (WorkspaceApplyError, FrameworkScanError) as e:
+        msg = getattr(e, "message", str(e))[:2048]
+        job.status = AutomationJobStatus.FAILED.value
+        job.blocked_reason = msg
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_WORKSPACE_APPLY_FAILED.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=aid,
+            workflow_run_id=job.workflow_run_id,
+            step_name="code_generation",
+            entity_type="automation_job",
+            entity_id=str(job.id),
+            payload={"message": msg, "source": "external_patch"},
+        )
+        db.flush()
+        raise WorkspaceApplyRejected(msg) from e
+
+    job.generated_patch_json = summary
+    job.status = AutomationJobStatus.EXECUTING.value
+    job.blocked_reason = None
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_CODE_GENERATED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=aid,
+        workflow_run_id=job.workflow_run_id,
+        step_name="code_generation",
+        entity_type="automation_job",
+        entity_id=str(job.id),
+        payload={
+            "files": len(summary.get("generated_files") or []),
+            "provider": summary.get("provider"),
+            "source": "external_patch",
+        },
+    )
+    db.flush()
+    return job
+
+
 def describe_generate_outcome(job: AutomationJob) -> str:
     """Short message for ``POST .../generate`` response body."""
     if job.status == AutomationJobStatus.EXECUTING.value:
@@ -720,11 +818,11 @@ def describe_approve_outcome(job: AutomationJob) -> str:
     return "Automation job updated."
 
 
-def request_automation_job_revision(
+def record_automation_job_revision_request(
     db: Session, job_id: uuid.UUID, *, actor_id: str, instruction_text: str
 ) -> AutomationJob:
     """
-    Record revision request, move to ``revising_after_review``, apply stub/LLM patch, re-execute.
+    Record revision request and transition to ``revising_after_review`` without invoking a provider.
     """
     job = db.get(AutomationJob, job_id)
     if job is None:
@@ -763,7 +861,20 @@ def request_automation_job_revision(
     job.status = AutomationJobStatus.REVISING_AFTER_REVIEW.value
     job.blocked_reason = None
     db.flush()
+    return job
 
+
+def request_automation_job_revision(
+    db: Session, job_id: uuid.UUID, *, actor_id: str, instruction_text: str
+) -> AutomationJob:
+    """
+    Record revision request, move to ``revising_after_review``, apply stub/LLM patch, re-execute.
+    """
+    job = record_automation_job_revision_request(
+        db, job_id, actor_id=actor_id, instruction_text=instruction_text
+    )
+    inst = str(instruction_text or "").strip()
+    aid = actor_id.strip()
     apply_review_revision_and_execute(db, job, instruction_text=inst, actor_id=aid)
     return job
 

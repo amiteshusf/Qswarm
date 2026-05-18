@@ -168,6 +168,99 @@ def apply_review_revision_and_execute(
     finalize_post_review_execution(db, job, rex, actor_id=aid, audit_step="review_revision")
 
 
+def apply_review_revision_with_external_patch(
+    db: Session,
+    job: AutomationJob,
+    *,
+    instruction_text: str,
+    actor_id: str,
+    raw_patch: dict[str, Any],
+    subprocess_run: Any | None = None,
+    provider_label: str = "external",
+) -> None:
+    """
+    Like :func:`apply_review_revision_and_execute` but uses a pre-built ``raw_patch`` dict
+    (e.g. from disk after an external coding engine) instead of calling a coding provider.
+    """
+    aid = actor_id.strip() or job.requested_by
+    inst_preview = str(instruction_text or "").strip()[:200]
+
+    try:
+        validate_repair_patch(raw_patch, job)
+    except PatchValidationError as e:
+        msg = (e.message or "patch_validation_failed")[:2048]
+        job.status = AutomationJobStatus.FAILED.value
+        job.blocked_reason = msg
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_PATCH_VALIDATION_FAILED.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=aid,
+            workflow_run_id=job.workflow_run_id,
+            step_name="review_revision",
+            entity_type="automation_job",
+            entity_id=str(job.id),
+            payload={
+                "message": msg[:500],
+                "source": "external_patch",
+                "instruction_preview": inst_preview,
+            },
+        )
+        db.flush()
+        return
+
+    try:
+        root = resolve_repo_path(job.repo_path)
+        apply_result = apply_generated_patch(root, raw_patch["generated_files"])
+    except (WorkspaceApplyError, FrameworkScanError) as e:
+        msg = getattr(e, "message", str(e))[:2048]
+        job.status = AutomationJobStatus.FAILED.value
+        job.blocked_reason = msg
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_WORKSPACE_APPLY_FAILED.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=aid,
+            workflow_run_id=job.workflow_run_id,
+            step_name="review_revision",
+            entity_type="automation_job",
+            entity_id=str(job.id),
+            payload={
+                "message": msg[:500],
+                "source": "external_patch",
+                "instruction_preview": inst_preview,
+            },
+        )
+        db.flush()
+        return
+
+    summary = summarize_patch_for_persistence(raw_patch)
+    summary["apply_result"] = apply_result
+    summary["provider"] = provider_label
+    summary["after_review_revision"] = True
+    job.generated_patch_json = summary
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_REVIEW_REVISION_APPLIED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=aid,
+        workflow_run_id=job.workflow_run_id,
+        step_name="review_revision",
+        entity_type="automation_job",
+        entity_id=str(job.id),
+        payload={
+            "files": len(summary.get("generated_files") or []),
+            "source": "external_patch",
+            "instruction_preview": inst_preview,
+        },
+    )
+    db.flush()
+
+    rex = run_playwright_execution_for_job(job, subprocess_run=subprocess_run)
+    finalize_post_review_execution(db, job, rex, actor_id=aid, audit_step="review_revision")
+
+
 def rerun_execution_after_manual_ack(
     db: Session,
     job: AutomationJob,

@@ -40,3 +40,23 @@ def run_code_generation_and_apply(
     summary["apply_result"] = apply_result
     summary["provider"] = p.name
     return summary
+
+
+def validate_apply_and_summarize_generated_patch(
+    job: AutomationJob,
+    raw_patch: dict[str, Any],
+    *,
+    provider_name: str,
+) -> dict[str, Any]:
+    """
+    Validate a full-generation patch, apply to ``repo_path``, return persistence summary.
+
+    Used by external engines (e.g. Claude Code CLI) that write files in the workspace first.
+    """
+    validate_generated_patch(raw_patch, job)
+    root = resolve_repo_path(job.repo_path)
+    apply_result = apply_generated_patch(root, raw_patch["generated_files"])
+    summary = summarize_patch_for_persistence(raw_patch)
+    summary["apply_result"] = apply_result
+    summary["provider"] = provider_name
+    return summary

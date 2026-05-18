@@ -54,6 +54,10 @@ class WorkflowRun(Base):
     automation_jobs: Mapped[list["AutomationJob"]] = relationship(
         "AutomationJob", back_populates="workflow_run"
     )
+    automation_sessions: Mapped[list["AutomationSession"]] = relationship(
+        "AutomationSession",
+        back_populates="workflow_run",
+    )
     jira_generated_test_cases: Mapped[list["JiraGeneratedTestCase"]] = relationship(
         "JiraGeneratedTestCase",
         back_populates="workflow_run",

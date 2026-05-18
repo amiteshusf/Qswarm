@@ -95,6 +95,13 @@ class AuditEventType(StrEnum):
     AUTOMATION_COMMIT_CREATED = "automation_commit_created"
     AUTOMATION_PR_CREATED = "automation_pr_created"
     AUTOMATION_PR_CREATION_FAILED = "automation_pr_creation_failed"
+    AUTOMATION_SESSION_CREATED = "automation_session_created"
+    AUTOMATION_ROUND_STARTED = "automation_round_started"
+    AUTOMATION_PLAN_VERSION_CREATED = "automation_plan_version_created"
+    AUTOMATION_PATCH_VERSION_CREATED = "automation_patch_version_created"
+    AUTOMATION_EXECUTION_ATTEMPT_RECORDED = "automation_execution_attempt_recorded"
+    AUTOMATION_REVIEW_REQUEST_RECORDED = "automation_review_request_recorded"
+    AUTOMATION_SESSION_APPROVED = "automation_session_approved"
 
 
 class PrRecordStatus(StrEnum):
@@ -108,10 +115,73 @@ class PrRecordStatus(StrEnum):
     FAILED = "failed"
 
 
+class SourceControlProviderName(StrEnum):
+    """Supported source-control providers for PR / merge-request creation."""
+
+    GITHUB = "github"
+    GITLAB = "gitlab"
+    BITBUCKET = "bitbucket"
+    AZURE_DEVOPS = "azure_devops"
+
+    @classmethod
+    def parse(cls, raw: str | None) -> SourceControlProviderName:
+        key = (raw or "").strip().lower()
+        for m in cls:
+            if m.value == key:
+                return m
+        raise ValueError(f"unsupported_source_control_provider:{key or 'empty'}")
+
+
+class CodeReviewRequestStatus(StrEnum):
+    """Normalized PR / MR record lifecycle (session-scoped)."""
+
+    PENDING_CREATION = "pending_creation"
+    CREATED = "created"
+    FAILED = "failed"
+    CLOSED = "closed"
+    MERGED = "merged"
+
+
 class AutomationJobReviewActionType(StrEnum):
     APPROVE = "approve"
     REQUEST_REVISION = "request_revision"
     MANUAL_EDIT_ACK = "manual_edit_ack"
+
+
+class AutomationSessionStatus(StrEnum):
+    """Control-plane session status (maps from underlying AutomationJob status)."""
+
+    PENDING = "pending"
+    PLANNING = "planning"
+    GENERATING = "generating"
+    EXECUTING = "executing"
+    AWAITING_REVIEW = "awaiting_review"
+    APPROVED_FOR_PR = "approved_for_pr"
+    CREATING_PR = "creating_pr"
+    PR_CREATED = "pr_created"
+    PR_FAILED = "pr_failed"
+    FAILED = "failed"
+
+
+class AutomationRevisionRoundTrigger(StrEnum):
+    INITIAL = "initial"
+    REVIEW_REVISION = "review_revision"
+    MANUAL_EDIT_RERUN = "manual_edit_rerun"
+    REPAIR = "repair"
+
+
+class AutomationReviewRequestAction(StrEnum):
+    REQUEST_REVISION = "request_revision"
+    MANUAL_EDIT_ACK = "manual_edit_ack"
+    APPROVE = "approve"
+    REJECT = "reject"
+    RERUN = "rerun"
+
+
+class AutomationReviewRequestStatus(StrEnum):
+    RECORDED = "recorded"
+    APPLIED = "applied"
+    FAILED = "failed"
 
 
 class AutomationJobStatus(StrEnum):
@@ -128,7 +198,9 @@ class AutomationJobStatus(StrEnum):
     AWAITING_HUMAN_INPUT = "awaiting_human_input"
     AWAITING_AUTOMATION_APPROVAL = "awaiting_automation_approval"
     APPROVED_FOR_PR = "approved_for_pr"
+    CREATING_PR = "creating_pr"
     PR_CREATED = "pr_created"
+    PR_CREATION_FAILED = "pr_creation_failed"
     FAILED = "failed"
 
 

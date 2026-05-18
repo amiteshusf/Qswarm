@@ -1,0 +1,819 @@
+"""Sprint 2 automation session orchestration (control plane over AutomationJob)."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.automation_engine import CodeSessionContext
+from app.automation_engine.coding_engine_names import CodingEngineName
+from app.automation_engine.engine_errors import (
+    EngineAdapterError,
+    EngineConfigurationError,
+    EngineMalformedOutputError,
+    EngineRepoAccessError,
+    EngineTimeoutError,
+)
+from app.automation_engine.registry import resolve_coding_agent_adapter
+from app.core.constants import (
+    ActorType,
+    AuditEventType,
+    AutomationJobStatus,
+    AutomationReviewRequestAction,
+    AutomationReviewRequestStatus,
+    AutomationRevisionRoundTrigger,
+    AutomationSessionStatus,
+)
+from app.db.models.automation_execution_attempt import AutomationExecutionAttempt
+from app.db.models.automation_job import AutomationJob
+from app.db.models.automation_patch_version import AutomationPatchVersion
+from app.db.models.automation_plan_version import AutomationPlanVersion
+from app.db.models.automation_revision_round import AutomationRevisionRound
+from app.db.models.automation_review_request import AutomationReviewRequest
+from app.db.models.automation_session import AutomationSession
+from app.schemas.automation import AutomationJobCreateRequest
+from app.schemas.automation_session import AutomationSessionCreateRequest
+from app.services import audit_service, automation_job_service
+from app.services.automation_job_service import ChangePlanRejected, PatchRejected, WorkspaceApplyRejected
+from app.services.automation_engine_payload_builder import AutomationEnginePayloadBuilder
+from app.services.execution_service import resolve_target_test_file
+from app.services.framework_scan_service import FrameworkScanError
+
+
+def _map_job_status_to_session(job_status: str) -> AutomationSessionStatus:
+    j = AutomationJobStatus
+    m: dict[str, AutomationSessionStatus] = {
+        j.PENDING.value: AutomationSessionStatus.PENDING,
+        j.SCANNING_FRAMEWORK.value: AutomationSessionStatus.PLANNING,
+        j.COLLECTING_CONTEXT.value: AutomationSessionStatus.PLANNING,
+        j.PLANNING_CHANGES.value: AutomationSessionStatus.PLANNING,
+        j.GENERATING_CODE.value: AutomationSessionStatus.GENERATING,
+        j.APPLYING_CHANGES.value: AutomationSessionStatus.GENERATING,
+        j.EXECUTING.value: AutomationSessionStatus.EXECUTING,
+        j.REVISING_AFTER_REVIEW.value: AutomationSessionStatus.EXECUTING,
+        j.REPAIRING.value: AutomationSessionStatus.EXECUTING,
+        j.AWAITING_AUTOMATION_REVIEW.value: AutomationSessionStatus.AWAITING_REVIEW,
+        j.AWAITING_HUMAN_INPUT.value: AutomationSessionStatus.AWAITING_REVIEW,
+        j.AWAITING_AUTOMATION_APPROVAL.value: AutomationSessionStatus.AWAITING_REVIEW,
+        j.APPROVED_FOR_PR.value: AutomationSessionStatus.APPROVED_FOR_PR,
+        j.CREATING_PR.value: AutomationSessionStatus.CREATING_PR,
+        j.PR_CREATED.value: AutomationSessionStatus.PR_CREATED,
+        j.PR_CREATION_FAILED.value: AutomationSessionStatus.PR_FAILED,
+        j.FAILED.value: AutomationSessionStatus.FAILED,
+    }
+    return m.get(job_status, AutomationSessionStatus.PENDING)
+
+
+def sync_session_status_from_job(session: AutomationSession, job: AutomationJob) -> None:
+    session.status = _map_job_status_to_session(job.status).value
+
+
+def _next_plan_version_number(db: Session, session_id: uuid.UUID) -> int:
+    m = db.scalar(
+        select(func.max(AutomationPlanVersion.version_number)).where(
+            AutomationPlanVersion.automation_session_id == session_id
+        )
+    )
+    return int(m or 0) + 1
+
+
+def _next_patch_version_number(db: Session, session_id: uuid.UUID) -> int:
+    m = db.scalar(
+        select(func.max(AutomationPatchVersion.version_number)).where(
+            AutomationPatchVersion.automation_session_id == session_id
+        )
+    )
+    return int(m or 0) + 1
+
+
+def _next_execution_attempt_number(db: Session, session_id: uuid.UUID) -> int:
+    m = db.scalar(
+        select(func.max(AutomationExecutionAttempt.attempt_number)).where(
+            AutomationExecutionAttempt.automation_session_id == session_id
+        )
+    )
+    return int(m or 0) + 1
+
+
+def _clear_current_plan_flags(db: Session, session_id: uuid.UUID) -> None:
+    for row in db.scalars(
+        select(AutomationPlanVersion).where(AutomationPlanVersion.automation_session_id == session_id)
+    ).all():
+        row.is_current = False
+
+
+def _clear_current_patch_flags(db: Session, session_id: uuid.UUID) -> None:
+    for row in db.scalars(
+        select(AutomationPatchVersion).where(AutomationPatchVersion.automation_session_id == session_id)
+    ).all():
+        row.is_current = False
+
+
+def record_plan_version(
+    db: Session,
+    *,
+    session: AutomationSession,
+    revision_round: AutomationRevisionRound,
+    plan_json: dict[str, Any],
+    created_by: str,
+) -> AutomationPlanVersion:
+    _clear_current_plan_flags(db, session.id)
+    vn = _next_plan_version_number(db, session.id)
+    row = AutomationPlanVersion(
+        automation_session_id=session.id,
+        revision_round_id=revision_round.id,
+        version_number=vn,
+        plan_json=plan_json,
+        is_current=True,
+        created_by=created_by[:256],
+    )
+    db.add(row)
+    db.flush()
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_PLAN_VERSION_CREATED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=created_by[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session",
+        entity_type="automation_plan_version",
+        entity_id=str(row.id),
+        payload={"automation_session_id": str(session.id), "version_number": vn},
+    )
+    db.flush()
+    return row
+
+
+def record_patch_version(
+    db: Session,
+    *,
+    session: AutomationSession,
+    revision_round: AutomationRevisionRound,
+    patch_json: dict[str, Any],
+    created_by: str,
+) -> AutomationPatchVersion:
+    _clear_current_patch_flags(db, session.id)
+    vn = _next_patch_version_number(db, session.id)
+    row = AutomationPatchVersion(
+        automation_session_id=session.id,
+        revision_round_id=revision_round.id,
+        version_number=vn,
+        patch_json=patch_json,
+        is_current=True,
+        created_by=created_by[:256],
+    )
+    db.add(row)
+    db.flush()
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_PATCH_VERSION_CREATED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=created_by[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session",
+        entity_type="automation_patch_version",
+        entity_id=str(row.id),
+        payload={"automation_session_id": str(session.id), "version_number": vn},
+    )
+    db.flush()
+    return row
+
+
+def record_execution_attempt(
+    db: Session,
+    *,
+    session: AutomationSession,
+    revision_round: AutomationRevisionRound | None,
+    job: AutomationJob,
+) -> AutomationExecutionAttempt:
+    ex = job.execution_result_json if isinstance(job.execution_result_json, dict) else {}
+    an = _next_execution_attempt_number(db, session.id)
+    cmd = ex.get("command")
+    if cmd is not None and not isinstance(cmd, (dict, list)):
+        cmd = None
+    row = AutomationExecutionAttempt(
+        automation_session_id=session.id,
+        revision_round_id=revision_round.id if revision_round else None,
+        attempt_number=an,
+        target_test_file=str(ex.get("target_test_file") or resolve_target_test_file(job) or "")[:1024]
+        or None,
+        command_json=cmd if isinstance(cmd, (dict, list)) else None,
+        result_json=ex,
+        success=bool(ex.get("success")),
+    )
+    db.add(row)
+    db.flush()
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_EXECUTION_ATTEMPT_RECORDED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id="automation_session",
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session",
+        entity_type="automation_execution_attempt",
+        entity_id=str(row.id),
+        payload={"automation_session_id": str(session.id), "attempt_number": an},
+    )
+    db.flush()
+    return row
+
+
+def create_automation_session(db: Session, body: AutomationSessionCreateRequest) -> AutomationSession:
+    try:
+        CodingEngineName.parse(body.coding_engine)
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+
+    job_body = AutomationJobCreateRequest(
+        approved_case_id=body.approved_case_id,
+        requested_by=body.created_by,
+        repo_id=body.repo_id,
+        repo_owner=body.repo_owner,
+        repo_name=body.repo_name,
+        repo_path=body.repo_path,
+        base_branch=body.base_branch,
+        workflow_run_id=body.workflow_run_id,
+        case_title=body.case_title,
+        case_description=body.case_description,
+        preconditions=body.preconditions,
+        steps=body.steps,
+        expected_results=body.expected_results,
+    )
+    job = automation_job_service.create_automation_job(db, job_body)
+
+    sess = AutomationSession(
+        source_system=body.source_system.strip() if body.source_system else None,
+        source_reference=body.source_reference.strip() if body.source_reference else None,
+        automation_job_id=job.id,
+        repo_owner=job.repo_owner,
+        repo_name=job.repo_name,
+        repo_path=job.repo_path,
+        base_branch=job.base_branch,
+        coding_engine=body.coding_engine.strip().lower(),
+        status=AutomationSessionStatus.PENDING.value,
+        current_round_number=0,
+        approved_case_id=job.approved_case_id,
+        workflow_run_id=body.workflow_run_id,
+        created_by=body.created_by.strip(),
+    )
+    db.add(sess)
+    db.flush()
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_SESSION_CREATED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=body.created_by.strip()[:256],
+        workflow_run_id=body.workflow_run_id,
+        step_name="automation_session",
+        entity_type="automation_session",
+        entity_id=str(sess.id),
+        payload={"automation_job_id": str(job.id), "coding_engine": sess.coding_engine},
+    )
+    db.flush()
+    return sess
+
+
+def get_session(db: Session, session_id: uuid.UUID) -> AutomationSession | None:
+    return db.get(AutomationSession, session_id)
+
+
+def session_to_summary(db: Session, session: AutomationSession) -> dict[str, Any]:
+    job = session.automation_job if session.automation_job_id else None
+    if job is None and session.automation_job_id:
+        job = db.get(AutomationJob, session.automation_job_id)
+    effective_status = (
+        _map_job_status_to_session(job.status).value if job else session.status
+    )
+    return {
+        "id": str(session.id),
+        "source_system": session.source_system,
+        "source_reference": session.source_reference,
+        "automation_job_id": str(session.automation_job_id) if session.automation_job_id else None,
+        "repo_owner": session.repo_owner,
+        "repo_name": session.repo_name,
+        "repo_path": session.repo_path,
+        "base_branch": session.base_branch,
+        "coding_engine": session.coding_engine,
+        "status": effective_status,
+        "current_round_number": session.current_round_number,
+        "approved_case_id": session.approved_case_id,
+        "workflow_run_id": str(session.workflow_run_id) if session.workflow_run_id else None,
+        "created_by": session.created_by,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+        "job_status": job.status if job else None,
+    }
+
+
+def start_automation_session(db: Session, session_id: uuid.UUID, *, actor_id: str | None = None) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    if not session.automation_job_id:
+        raise ValueError("session_missing_job")
+    job = db.get(AutomationJob, session.automation_job_id)
+    if job is None:
+        raise ValueError("job_not_found")
+    if session.current_round_number > 0:
+        raise ValueError("session_already_started")
+    if job.status != AutomationJobStatus.PENDING.value:
+        raise ValueError("job_not_pending")
+
+    aid = (actor_id or session.created_by or "").strip()
+    if not aid:
+        raise ValueError("actor_missing")
+
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    rnd = AutomationRevisionRound(
+        automation_session_id=session.id,
+        round_number=1,
+        started_by=aid[:256],
+        trigger_type=AutomationRevisionRoundTrigger.INITIAL.value,
+        instruction_text=None,
+        target_scope=None,
+        status="in_progress",
+    )
+    db.add(rnd)
+    db.flush()
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_ROUND_STARTED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=aid[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_start",
+        entity_type="automation_revision_round",
+        entity_id=str(rnd.id),
+        payload={"round_number": 1, "trigger": rnd.trigger_type},
+    )
+    db.flush()
+
+    ctx = CodeSessionContext(db=db, session=session, job=job, actor_id=aid, revision_round=rnd)
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_initial_request(session, job, rnd, actor_id=aid)
+
+    try:
+        adapter.run_initial_request(req, context=ctx)
+    except FrameworkScanError:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except ChangePlanRejected:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineConfigurationError:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except (PatchRejected, WorkspaceApplyRejected):
+        rnd.status = "failed"
+        session.current_round_number = 1
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineTimeoutError:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineRepoAccessError:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineMalformedOutputError:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineAdapterError:
+        rnd.status = "failed"
+        session.current_round_number = 1
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+
+    db.refresh(job)
+    sync_session_status_from_job(session, job)
+    db.flush()
+
+    if isinstance(job.change_plan_json, dict) and job.change_plan_json:
+        record_plan_version(
+            db, session=session, revision_round=rnd, plan_json=dict(job.change_plan_json), created_by=aid
+        )
+    if isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
+        record_patch_version(
+            db,
+            session=session,
+            revision_round=rnd,
+            patch_json=dict(job.generated_patch_json),
+            created_by=aid,
+        )
+    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
+        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
+
+    sync_session_status_from_job(session, job)
+    rnd.status = "completed" if job.status != AutomationJobStatus.FAILED.value else "failed"
+    session.current_round_number = 1
+    db.flush()
+
+    return session
+
+
+
+def request_session_revision(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str,
+    instruction_text: str,
+    target_scope: str | None,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+
+    next_n = session.current_round_number + 1
+    rnd = AutomationRevisionRound(
+        automation_session_id=session.id,
+        round_number=next_n,
+        started_by=actor_id.strip()[:256],
+        trigger_type=AutomationRevisionRoundTrigger.REVIEW_REVISION.value,
+        instruction_text=instruction_text.strip()[:20000],
+        target_scope=(target_scope.strip()[:512] if target_scope else None),
+        status="in_progress",
+    )
+    db.add(rnd)
+    db.flush()
+
+    rr = AutomationReviewRequest(
+        automation_session_id=session.id,
+        revision_round_id=rnd.id,
+        actor_id=actor_id.strip()[:256],
+        instruction_text=instruction_text.strip()[:20000],
+        target_scope=(target_scope.strip()[:512] if target_scope else None),
+        action_type=AutomationReviewRequestAction.REQUEST_REVISION.value,
+        status=AutomationReviewRequestStatus.RECORDED.value,
+    )
+    db.add(rr)
+    db.flush()
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_REVIEW_REQUEST_RECORDED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=actor_id.strip()[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_revision",
+        entity_type="automation_review_request",
+        entity_id=str(rr.id),
+        payload={"action": rr.action_type},
+    )
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_ROUND_STARTED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=actor_id.strip()[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_revision",
+        entity_type="automation_revision_round",
+        entity_id=str(rnd.id),
+        payload={"round_number": next_n, "trigger": rnd.trigger_type},
+    )
+    db.flush()
+
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_revision_request(
+        session,
+        job,
+        rnd,
+        actor_id=actor_id.strip(),
+        instruction_text=instruction_text,
+        target_scope=target_scope,
+    )
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    ctx = CodeSessionContext(
+        db=db,
+        session=session,
+        job=job,
+        actor_id=actor_id.strip(),
+        revision_round=rnd,
+    )
+    try:
+        adapter.run_revision_request(req, context=ctx)
+    except (
+        EngineConfigurationError,
+        EngineTimeoutError,
+        EngineRepoAccessError,
+        EngineMalformedOutputError,
+        EngineAdapterError,
+    ):
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = "failed"
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except (PatchRejected, WorkspaceApplyRejected):
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = "failed"
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+
+    db.refresh(job)
+
+    rr.status = AutomationReviewRequestStatus.APPLIED.value
+    rnd.status = "completed" if job.status == AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value else "failed"
+    session.current_round_number = next_n
+
+    if isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
+        record_patch_version(
+            db,
+            session=session,
+            revision_round=rnd,
+            patch_json=dict(job.generated_patch_json),
+            created_by=actor_id.strip()[:256],
+        )
+    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
+        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
+
+    sync_session_status_from_job(session, job)
+    db.flush()
+    return session
+
+
+def acknowledge_session_manual_edit(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str,
+    note: str,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+
+    next_n = session.current_round_number + 1
+    rnd = AutomationRevisionRound(
+        automation_session_id=session.id,
+        round_number=next_n,
+        started_by=actor_id.strip()[:256],
+        trigger_type=AutomationRevisionRoundTrigger.MANUAL_EDIT_RERUN.value,
+        instruction_text=note.strip()[:5000],
+        target_scope=None,
+        status="in_progress",
+    )
+    db.add(rnd)
+    db.flush()
+
+    rr = AutomationReviewRequest(
+        automation_session_id=session.id,
+        revision_round_id=rnd.id,
+        actor_id=actor_id.strip()[:256],
+        instruction_text=note.strip()[:5000],
+        target_scope=None,
+        action_type=AutomationReviewRequestAction.MANUAL_EDIT_ACK.value,
+        status=AutomationReviewRequestStatus.RECORDED.value,
+    )
+    db.add(rr)
+    db.flush()
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_REVIEW_REQUEST_RECORDED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=actor_id.strip()[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_manual_ack",
+        entity_type="automation_review_request",
+        entity_id=str(rr.id),
+        payload={"action": rr.action_type},
+    )
+    db.flush()
+
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_manual_rerun_request(
+        session, job, rnd, actor_id=actor_id.strip(), note=note.strip()
+    )
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    ctx = CodeSessionContext(
+        db=db,
+        session=session,
+        job=job,
+        actor_id=actor_id.strip(),
+        revision_round=rnd,
+    )
+    adapter.run_manual_rerun_request(req, context=ctx)
+    db.refresh(job)
+
+    rr.status = AutomationReviewRequestStatus.APPLIED.value
+    rnd.status = "completed" if job.status == AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value else "failed"
+    session.current_round_number = next_n
+
+    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
+        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
+
+    sync_session_status_from_job(session, job)
+    db.flush()
+    return session
+
+
+def approve_automation_session(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+
+    rr = AutomationReviewRequest(
+        automation_session_id=session.id,
+        revision_round_id=None,
+        actor_id=actor_id.strip()[:256],
+        instruction_text=None,
+        target_scope=None,
+        action_type=AutomationReviewRequestAction.APPROVE.value,
+        status=AutomationReviewRequestStatus.RECORDED.value,
+    )
+    db.add(rr)
+    db.flush()
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_REVIEW_REQUEST_RECORDED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=actor_id.strip()[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_approve",
+        entity_type="automation_review_request",
+        entity_id=str(rr.id),
+        payload={"action": "approve"},
+    )
+    db.flush()
+
+    automation_job_service.approve_automation_job_for_pr(db, job.id, actor_id=actor_id.strip())
+    db.refresh(job)
+
+    rr.status = AutomationReviewRequestStatus.APPLIED.value
+    sync_session_status_from_job(session, job)
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_SESSION_APPROVED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=actor_id.strip()[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_approve",
+        entity_type="automation_session",
+        entity_id=str(session.id),
+        payload={"automation_job_id": str(job.id)},
+    )
+    db.flush()
+    return session
+
+
+def list_rounds_for_api(db: Session, session_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = list(
+        db.scalars(
+            select(AutomationRevisionRound)
+            .where(AutomationRevisionRound.automation_session_id == session_id)
+            .order_by(AutomationRevisionRound.round_number.asc())
+        ).all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "round_number": r.round_number,
+            "started_by": r.started_by,
+            "trigger_type": r.trigger_type,
+            "instruction_text": r.instruction_text,
+            "target_scope": r.target_scope,
+            "status": r.status,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+def list_plan_versions_for_api(db: Session, session_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = list(
+        db.scalars(
+            select(AutomationPlanVersion)
+            .where(AutomationPlanVersion.automation_session_id == session_id)
+            .order_by(AutomationPlanVersion.version_number.asc())
+        ).all()
+    )
+    return [
+        {
+            "id": str(p.id),
+            "revision_round_id": str(p.revision_round_id),
+            "version_number": p.version_number,
+            "is_current": p.is_current,
+            "created_by": p.created_by,
+            "created_at": p.created_at.isoformat(),
+            "plan_json": p.plan_json,
+        }
+        for p in rows
+    ]
+
+
+def list_patch_versions_for_api(db: Session, session_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = list(
+        db.scalars(
+            select(AutomationPatchVersion)
+            .where(AutomationPatchVersion.automation_session_id == session_id)
+            .order_by(AutomationPatchVersion.version_number.asc())
+        ).all()
+    )
+    return [
+        {
+            "id": str(p.id),
+            "revision_round_id": str(p.revision_round_id),
+            "version_number": p.version_number,
+            "is_current": p.is_current,
+            "created_by": p.created_by,
+            "created_at": p.created_at.isoformat(),
+            "patch_json": p.patch_json,
+        }
+        for p in rows
+    ]
+
+
+def list_execution_attempts_for_api(db: Session, session_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = list(
+        db.scalars(
+            select(AutomationExecutionAttempt)
+            .where(AutomationExecutionAttempt.automation_session_id == session_id)
+            .order_by(AutomationExecutionAttempt.attempt_number.asc())
+        ).all()
+    )
+    return [
+        {
+            "id": str(e.id),
+            "revision_round_id": str(e.revision_round_id) if e.revision_round_id else None,
+            "attempt_number": e.attempt_number,
+            "target_test_file": e.target_test_file,
+            "command_json": e.command_json,
+            "result_json": e.result_json,
+            "success": e.success,
+            "created_at": e.created_at.isoformat(),
+        }
+        for e in rows
+    ]
+
+
+def list_review_requests_for_api(db: Session, session_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = list(
+        db.scalars(
+            select(AutomationReviewRequest)
+            .where(AutomationReviewRequest.automation_session_id == session_id)
+            .order_by(AutomationReviewRequest.created_at.asc())
+        ).all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "revision_round_id": str(r.revision_round_id) if r.revision_round_id else None,
+            "actor_id": r.actor_id,
+            "instruction_text": r.instruction_text,
+            "target_scope": r.target_scope,
+            "action_type": r.action_type,
+            "status": r.status,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]

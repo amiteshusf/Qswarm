@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.routes import approvals, audit, automation, health, intake, jira, workflow
+from app.api.routes import approvals, audit, automation, automation_sessions, health, intake, jira, repository_connections, workflow
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 
@@ -35,6 +35,8 @@ app.include_router(intake.router)
 app.include_router(workflow.router)
 app.include_router(approvals.router)
 app.include_router(automation.router)
+app.include_router(automation_sessions.router)
+app.include_router(repository_connections.router)
 app.include_router(audit.router)
 
 

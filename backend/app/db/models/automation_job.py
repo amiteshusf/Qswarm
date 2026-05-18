@@ -14,6 +14,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.db.models.automation_job_review_action import AutomationJobReviewAction
+    from app.db.models.automation_session import AutomationSession
     from app.db.models.pr_record import PrRecord
 
 
@@ -71,4 +72,9 @@ class AutomationJob(Base):
         "PrRecord",
         back_populates="automation_job",
         cascade="all, delete-orphan",
+    )
+    automation_session: Mapped["AutomationSession | None"] = relationship(
+        "AutomationSession",
+        back_populates="automation_job",
+        uselist=False,
     )
