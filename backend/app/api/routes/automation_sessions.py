@@ -38,6 +38,7 @@ from app.schemas.common import ErrorDetail, ErrorResponse
 from app.services import automation_pr_service, automation_session_service
 from app.services.automation_job_service import ChangePlanRejected, PatchRejected, WorkspaceApplyRejected
 from app.services.framework_scan_service import FrameworkScanError
+from app.services.framework_runtime_errors import HostedExecutionPreparationError
 from app.services.repo_bootstrap_service import RepoBootstrapError
 from app.services.repo_workspace_service import RepoAuthError, RepoWorkspaceError
 from app.source_control.errors import (
@@ -240,7 +241,7 @@ def start_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ErrorDetail(code=e.code, message=e.message).model_dump(),
         ) from e
-    except RepoBootstrapError as e:
+    except (RepoBootstrapError, HostedExecutionPreparationError) as e:
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -363,7 +364,7 @@ def request_revision(session_id: uuid.UUID, body: AutomationSessionRevisionBody,
             instruction_text=body.instruction_text,
             target_scope=body.target_scope,
         )
-    except RepoBootstrapError as e:
+    except (RepoBootstrapError, HostedExecutionPreparationError) as e:
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -462,7 +463,7 @@ def manual_edit_ack(session_id: uuid.UUID, body: AutomationSessionManualAckBody,
         sess = automation_session_service.acknowledge_session_manual_edit(
             db, session_id, actor_id=body.actor_id, note=body.note
         )
-    except RepoBootstrapError as e:
+    except (RepoBootstrapError, HostedExecutionPreparationError) as e:
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -13,22 +13,20 @@ from app.services.repo_bootstrap_service import (
     RepoBootstrapCommandMissingError,
     RepoBootstrapError,
     RepoBootstrapTimeoutError,
-    RepoBootstrapValidationError,
     bootstrap_node_workspace,
     bootstrap_result_to_audit_payload,
 )
 
 
 def _fake_npm_run_populates_hosted_layout(argv, *, cwd, timeout_seconds, env=None):
-    """Mimic successful npm leaving a tree that passes hosted post-install validation."""
+    """Mimic successful npm (hosted validation is handled in framework_runtime_service)."""
     if argv == ["npm", "--version"]:
         return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
     if list(argv)[:2] in (["npm", "ci"], ["npm", "install"]):
         root = Path(cwd)
-        nm = root / "node_modules"
-        nm.mkdir(parents=True, exist_ok=True)
+        (root / "node_modules").mkdir(parents=True, exist_ok=True)
         if PlaywrightAdapter().detect(root):
-            pwt = nm / "@playwright" / "test"
+            pwt = root / "node_modules" / "@playwright" / "test"
             pwt.mkdir(parents=True, exist_ok=True)
             (pwt / "package.json").write_text("{}")
     return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
@@ -186,50 +184,7 @@ def test_timeout_raises(tmp_path: Path):
     assert ei.value.code == "repo_bootstrap_timeout"
 
 
-def test_hosted_validation_fails_if_node_modules_missing_after_npm(tmp_path: Path):
-    (tmp_path / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    def fake_run(argv, *, cwd, timeout_seconds, env=None):
-        if argv == ["npm", "--version"]:
-            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
-        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
-
-    with pytest.raises(RepoBootstrapValidationError) as ei:
-        bootstrap_node_workspace(
-            tmp_path,
-            workspace_profile="hosted_materialized",
-            settings=Settings(qswarm_bootstrap_timeout_seconds=60),
-            subprocess_runner=fake_run,
-        )
-    assert ei.value.code == "repo_bootstrap_validation_failed"
-
-
-def test_hosted_validation_fails_if_playwright_test_missing(tmp_path: Path):
-    (tmp_path / "playwright.config.ts").write_text("export default {};\n")
-    (tmp_path / "package.json").write_text('{"devDependencies":{"@playwright/test":"^1.0.0"}}')
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    def fake_run(argv, *, cwd, timeout_seconds, env=None):
-        if argv == ["npm", "--version"]:
-            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
-        if list(argv)[:2] == ["npm", "ci"]:
-            (Path(cwd) / "node_modules").mkdir(parents=True, exist_ok=True)
-        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
-
-    with pytest.raises(RepoBootstrapValidationError) as ei:
-        bootstrap_node_workspace(
-            tmp_path,
-            workspace_profile="hosted_materialized",
-            settings=Settings(qswarm_bootstrap_timeout_seconds=60),
-            subprocess_runner=fake_run,
-        )
-    assert ei.value.code == "repo_bootstrap_validation_failed"
-    assert "@playwright/test" in ei.value.message
-
-
-def test_local_existing_npm_success_does_not_run_hosted_post_install_validation(tmp_path: Path):
-    """Local profile: npm exit 0 is enough; no strict filesystem gate (preserve local behavior)."""
+def test_local_existing_npm_success_without_framework_layer(tmp_path: Path):
     (tmp_path / "package.json").write_text("{}")
     calls: list[list[str]] = []
 
@@ -246,7 +201,6 @@ def test_local_existing_npm_success_does_not_run_hosted_post_install_validation(
         subprocess_runner=fake_run,
     )
     assert r.bootstrap_required is True
-    assert r.install_validation is None
 
 
 def test_audit_payload_shape():
@@ -260,8 +214,6 @@ def test_audit_payload_shape():
     r.stdout_tail = "ok"
     r.stderr_tail = "warn"
     r.notes = None
-    r.install_validation = {"bootstrap_cwd": "/tmp/r", "playwright_repo": False}
     p = bootstrap_result_to_audit_payload(r)
     assert p["command"] == ["npm", "ci"]
-    assert p["install_validation"]["playwright_repo"] is False
     assert "token" not in str(p).lower()

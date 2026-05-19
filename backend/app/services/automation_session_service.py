@@ -45,6 +45,12 @@ from app.services.automation_engine_payload_builder import AutomationEnginePaylo
 from app.services.execution_service import resolve_target_test_file
 from app.services.framework_scan_service import FrameworkScanError
 from app.services.repository_connection_service import get_repository_connection
+from app.services.framework_runtime_errors import HostedExecutionPreparationError
+from app.services.framework_runtime_service import (
+    build_repo_bootstrap_plan,
+    detect_framework_runtime,
+    prepare_hosted_materialized_execution,
+)
 from app.services.repo_bootstrap_service import (
     RepoBootstrapError,
     WorkspaceProfile,
@@ -78,7 +84,24 @@ def _run_repo_bootstrap_for_session(
             code="repo_bootstrap_workspace_path_missing",
         )
     root = Path(rp)
-    planned_cmd, stack = planned_npm_bootstrap_command(root)
+
+    if workspace_profile == "hosted_materialized":
+        profile = detect_framework_runtime(root)
+        plan = build_repo_bootstrap_plan(profile, root)
+        planned_cmd = plan.command
+        stack = plan.strategy_key
+        gate_extra = {
+            "framework_name": profile.framework_name,
+            "framework_family": profile.framework_family,
+            "bootstrap_strategy": profile.bootstrap_strategy,
+            "repo_bootstrap_plan_strategy": plan.strategy_key,
+        }
+    else:
+        profile = None
+        plan = None
+        planned_cmd, stack = planned_npm_bootstrap_command(root)
+        gate_extra = {}
+
     logger.info(
         "repo_bootstrap_gate",
         extra={
@@ -89,8 +112,26 @@ def _run_repo_bootstrap_for_session(
             "prep_mode": prep_mode,
             "detected_stack": stack,
             "planned_command": planned_cmd,
+            **gate_extra,
         },
     )
+    start_payload: dict[str, Any] = {
+        "workspace_path": rp,
+        "workspace_profile": workspace_profile,
+        "prep_mode": prep_mode,
+        "detected_stack": stack,
+        "planned_command": planned_cmd,
+    }
+    if profile is not None:
+        start_payload["framework_runtime_profile"] = profile.to_audit_dict()
+    if plan is not None:
+        start_payload["repo_bootstrap_plan"] = {
+            "command": plan.command,
+            "required": plan.required,
+            "strategy_key": plan.strategy_key,
+            "validation_paths": list(plan.validation_paths),
+            "notes": plan.notes,
+        }
     audit_service.write_audit(
         db,
         event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP_STARTED.value,
@@ -100,21 +141,25 @@ def _run_repo_bootstrap_for_session(
         step_name="repo_bootstrap",
         entity_type="automation_job",
         entity_id=str(job.id),
-        payload={
-            "workspace_path": rp,
-            "workspace_profile": workspace_profile,
-            "prep_mode": prep_mode,
-            "detected_stack": stack,
-            "planned_command": planned_cmd,
-        },
+        payload=start_payload,
     )
     db.flush()
+    framework_name_log: str | None = None
     try:
-        res = bootstrap_node_workspace(
-            root,
-            workspace_profile=workspace_profile,
-            settings=get_settings(),
-        )
+        if workspace_profile == "hosted_materialized":
+            hosted = prepare_hosted_materialized_execution(root, settings=get_settings())
+            res = hosted.bootstrap_result
+            framework_name_log = hosted.profile.framework_name
+            done_payload = bootstrap_result_to_audit_payload(res)
+            done_payload["framework_runtime_profile"] = hosted.profile.to_audit_dict()
+            done_payload["runtime_validation"] = hosted.runtime_validation.to_audit_dict()
+        else:
+            res = bootstrap_node_workspace(
+                root,
+                workspace_profile=workspace_profile,
+                settings=get_settings(),
+            )
+            done_payload = bootstrap_result_to_audit_payload(res)
         audit_service.write_audit(
             db,
             event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
@@ -124,7 +169,7 @@ def _run_repo_bootstrap_for_session(
             step_name="repo_bootstrap",
             entity_type="automation_job",
             entity_id=str(job.id),
-            payload=bootstrap_result_to_audit_payload(res),
+            payload=done_payload,
         )
         db.flush()
         logger.info(
@@ -136,9 +181,10 @@ def _run_repo_bootstrap_for_session(
                 "command": res.command,
                 "success": res.success,
                 "notes": res.notes,
+                "framework_name": framework_name_log,
             },
         )
-    except RepoBootstrapError as e:
+    except (RepoBootstrapError, HostedExecutionPreparationError) as e:
         audit_service.write_audit(
             db,
             event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
@@ -151,8 +197,13 @@ def _run_repo_bootstrap_for_session(
             payload={"success": False, "code": e.code, "message": e.message[:4000]},
         )
         db.flush()
+        log_key = (
+            "hosted_execution_preparation_failed"
+            if isinstance(e, HostedExecutionPreparationError)
+            else "repo_bootstrap_failed"
+        )
         logger.warning(
-            "repo_bootstrap_failed",
+            log_key,
             extra={"automation_job_id": str(job.id), "code": e.code, "workspace_profile": workspace_profile},
         )
         raise
@@ -694,6 +745,7 @@ def request_session_revision(
         adapter.run_revision_request(req, context=ctx)
     except (
         RepoBootstrapError,
+        HostedExecutionPreparationError,
         EngineConfigurationError,
         EngineTimeoutError,
         EngineRepoAccessError,
@@ -812,7 +864,7 @@ def acknowledge_session_manual_edit(
             prep_mode=None,
         )
         adapter.run_manual_rerun_request(req, context=ctx)
-    except RepoBootstrapError:
+    except (RepoBootstrapError, HostedExecutionPreparationError):
         rr.status = AutomationReviewRequestStatus.FAILED.value
         rnd.status = "failed"
         db.refresh(job)

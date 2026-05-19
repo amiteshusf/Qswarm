@@ -333,7 +333,7 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
         )
 
     monkeypatch.setattr(ss, "prepare_automation_session_workspace", fake_prepare)
-    monkeypatch.setattr(ss, "bootstrap_node_workspace", fake_bootstrap)
+    monkeypatch.setattr("app.services.framework_runtime_service.bootstrap_node_workspace", fake_bootstrap)
     monkeypatch.setattr(
         "app.services.automation_job_service.run_playwright_execution_for_job",
         _stub_execution_run_factory(),
@@ -372,9 +372,12 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
         .order_by(AuditLog.created_at)
     ).all()
     assert boot_fin, "expected bootstrap completion audit"
-    iv = boot_fin[-1].event_payload_json.get("install_validation") or {}
-    assert iv.get("bootstrap_cwd") == str(ws.resolve())
-    assert iv.get("playwright_repo") is True
+    rv = boot_fin[-1].event_payload_json.get("runtime_validation") or {}
+    assert rv.get("success") is True
+    checks = " ".join(rv.get("checks_run") or [])
+    assert str(ws.resolve()) in checks.replace("\\", "/")
+    prof = boot_fin[-1].event_payload_json.get("framework_runtime_profile") or {}
+    assert prof.get("framework_name") == "playwright"
 
 
 def test_session_start_hosted_validation_failure_blocks_execution_and_no_attempts(
@@ -431,7 +434,7 @@ def test_session_start_hosted_validation_failure_blocks_execution_and_no_attempt
         )
 
     monkeypatch.setattr(ss, "prepare_automation_session_workspace", fake_prepare)
-    monkeypatch.setattr(ss, "bootstrap_node_workspace", fake_bootstrap)
+    monkeypatch.setattr("app.services.framework_runtime_service.bootstrap_node_workspace", fake_bootstrap)
     monkeypatch.setattr("app.services.automation_job_service.execute_automation_job", track_execute)
     monkeypatch.setattr(
         "app.services.automation_job_service.run_playwright_execution_for_job",
@@ -458,7 +461,7 @@ def test_session_start_hosted_validation_failure_blocks_execution_and_no_attempt
     jid = uuid.UUID(cr.json()["automation_job_id"])
     st = client.post(f"/automation/sessions/{sid}/start", json={})
     assert st.status_code == 400, st.text
-    assert st.json()["detail"]["code"] == "repo_bootstrap_validation_failed"
+    assert st.json()["detail"]["code"] == "runtime_validation_failed"
     assert exec_calls == []
 
     n_attempts = db_session.scalar(

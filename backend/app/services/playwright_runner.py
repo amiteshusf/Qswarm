@@ -19,6 +19,7 @@ def run_playwright_test(
     target_test_file: str,
     *,
     timeout_sec: int,
+    command: list[str] | None = None,
     subprocess_run: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -26,7 +27,7 @@ def run_playwright_test(
 
     Returns a dict suitable for normalization (stdout/stderr may be large).
     """
-    cmd = build_playwright_command(target_test_file)
+    cmd = command if command is not None else build_playwright_command(target_test_file)
     runner = subprocess_run or subprocess.run
     start = time.monotonic()
 

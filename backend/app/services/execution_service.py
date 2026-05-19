@@ -7,6 +7,8 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.db.models.automation_job import AutomationJob
+from app.services.framework_runtime_errors import ExecutionPlanError
+from app.services.framework_runtime_models import ExecutionPlan
 from app.services.framework_scan_service import FrameworkScanError, resolve_repo_path
 from app.services.playwright_runner import build_playwright_command, run_playwright_test
 
@@ -118,6 +120,45 @@ def normalize_run_result(
     return out
 
 
+def build_playwright_execution_plan(job: AutomationJob) -> ExecutionPlan:
+    """
+    Framework-runtime execution plan: resolved cwd + argv for Playwright.
+
+    Raises:
+        ExecutionPlanError: When prerequisites, repo path, or target cannot be resolved safely.
+    """
+    if not execution_prerequisites_met(job):
+        raise ExecutionPlanError(
+            "Execution prerequisites not met (framework summary, repo_path, plan/patch).",
+            code="execution_prerequisites_missing",
+        )
+
+    fw = job.framework_summary_json if isinstance(job.framework_summary_json, dict) else {}
+    if fw.get("framework_type") != "playwright":
+        raise ExecutionPlanError("Job is not configured for Playwright execution.", code="execution_not_playwright")
+
+    target = resolve_target_test_file(job)
+    if not target:
+        raise ExecutionPlanError("Could not resolve target test file for execution.", code="execution_target_unresolvable")
+
+    try:
+        repo = resolve_repo_path(job.repo_path)
+    except FrameworkScanError as e:
+        raise ExecutionPlanError(
+            getattr(e, "message", str(e)),
+            code="execution_repo_path_invalid",
+        ) from e
+
+    cmd = build_playwright_command(target)
+    return ExecutionPlan(
+        command=cmd,
+        cwd=str(repo.resolve()),
+        target_scope=target,
+        framework_name="playwright",
+        notes="npx playwright test <target>",
+    )
+
+
 def run_playwright_execution_for_job(
     job: AutomationJob,
     *,
@@ -128,42 +169,37 @@ def run_playwright_execution_for_job(
     Resolve workspace and target, optionally run subprocess, return ``execution_result_json`` blob.
 
     Raises:
-        ValueError: ``execution_not_playwright`` or ``execution_target_unresolvable`` if
-        callers skip ``execution_prerequisites_met``.
+        ValueError: If callers skip ``execution_prerequisites_met`` (defensive).
     """
     if not execution_prerequisites_met(job):
         raise ValueError("execution_prerequisites_missing")
 
-    fw = job.framework_summary_json if isinstance(job.framework_summary_json, dict) else {}
-    if fw.get("framework_type") != "playwright":
-        raise ValueError("execution_not_playwright")
-
-    target = resolve_target_test_file(job)
-    if not target:
-        raise ValueError("execution_target_unresolvable")
-
     try:
-        repo = resolve_repo_path(job.repo_path)
-    except FrameworkScanError as e:
+        plan = build_playwright_execution_plan(job)
+    except ExecutionPlanError as e:
+        tw = resolve_target_test_file(job) or "tests/unknown.spec.ts"
         return build_preflight_failure_result(
-            target_test_file=target,
-            command=build_playwright_command(target),
-            note=getattr(e, "message", str(e)),
+            target_test_file=tw,
+            command=build_playwright_command(tw),
+            note=e.message,
         )
+
+    repo = Path(plan.cwd)
+    target = plan.target_scope or ""
 
     try:
         dest = _safe_target_path(repo, target)
     except ValueError:
         return build_preflight_failure_result(
             target_test_file=target,
-            command=build_playwright_command(target),
+            command=plan.command,
             note="Target path is invalid or escapes the repository root",
         )
 
     if not dest.is_file():
         return build_preflight_failure_result(
             target_test_file=target,
-            command=build_playwright_command(target),
+            command=plan.command,
             note="Target test file is missing under repo_path",
         )
 
@@ -173,6 +209,7 @@ def run_playwright_execution_for_job(
         repo,
         target,
         timeout_sec=int(timeout),
+        command=plan.command,
         subprocess_run=subprocess_run,
     )
     return normalize_run_result(raw, target_test_file=target, framework_type="playwright")
