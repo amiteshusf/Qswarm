@@ -464,6 +464,30 @@ def test_session_start_hosted_validation_failure_blocks_execution_and_no_attempt
     assert st.json()["detail"]["code"] == "runtime_validation_failed"
     assert exec_calls == []
 
+    db_session.expire_all()
+    sess = db_session.get(AutomationSession, sid)
+    job_row = db_session.get(AutomationJob, jid)
+    assert sess is not None and job_row is not None
+    assert sess.status == AutomationSessionStatus.FAILED.value
+    assert job_row.status == AutomationJobStatus.FAILED.value
+    assert sess.current_round_number == 0
+
+    n_rounds = db_session.scalar(
+        select(func.count()).select_from(AutomationRevisionRound).where(
+            AutomationRevisionRound.automation_session_id == sid
+        )
+    )
+    assert int(n_rounds or 0) == 0
+
+    pre_fail = db_session.scalars(
+        select(AuditLog).where(
+            AuditLog.event_type == AuditEventType.AUTOMATION_SESSION_START_PRE_ROUND_FAILED.value,
+            AuditLog.entity_id == str(sid),
+        )
+    ).all()
+    assert len(pre_fail) >= 1
+    assert pre_fail[0].event_payload_json.get("stage") == "runtime_validation"
+
     n_attempts = db_session.scalar(
         select(func.count())
         .select_from(AutomationExecutionAttempt)
@@ -528,12 +552,66 @@ def test_session_start_bootstrap_failure_returns_400_and_skips_execution(
     assert r.json()["detail"]["code"] == "repo_bootstrap_failed"
     assert exec_calls == []
 
+    db_session.expire_all()
+    sess = db_session.get(AutomationSession, sid)
+    job_row = db_session.get(AutomationJob, uuid.UUID(data["automation_job_id"]))
+    assert sess.status == AutomationSessionStatus.FAILED.value
+    assert job_row.status == AutomationJobStatus.FAILED.value
+
+    pre = db_session.scalars(
+        select(AuditLog).where(
+            AuditLog.event_type == AuditEventType.AUTOMATION_SESSION_START_PRE_ROUND_FAILED.value,
+            AuditLog.entity_id == str(sid),
+        )
+    ).all()
+    assert pre and pre[0].event_payload_json.get("stage") == "bootstrap"
+
     n_rounds = db_session.scalar(
         select(func.count()).select_from(AutomationRevisionRound).where(
             AutomationRevisionRound.automation_session_id == sid
         )
     )
     assert int(n_rounds or 0) == 0
+
+
+def test_session_start_workspace_prep_failure_marks_session_and_job_failed(
+    client, tmp_path: Path, monkeypatch, db_session
+):
+    import app.services.automation_session_service as ss
+    from app.services.repo_workspace_service import RepoCloneError
+
+    def fail_prep(*args, **kwargs):
+        raise RepoCloneError("simulated clone failure", code="repo_clone_failed")
+
+    monkeypatch.setattr(ss, "prepare_automation_session_workspace", fail_prep)
+    monkeypatch.setattr(
+        "app.services.automation_job_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    monkeypatch.setattr(
+        "app.services.automation_review_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    data = _create_session(client, tmp_path, case_id="SESS-WSP-FAIL")
+    sid = uuid.UUID(data["id"])
+    jid = uuid.UUID(data["automation_job_id"])
+    r = client.post(f"/automation/sessions/{sid}/start", json={})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "repo_clone_failed"
+
+    db_session.expire_all()
+    sess = db_session.get(AutomationSession, sid)
+    job_row = db_session.get(AutomationJob, jid)
+    assert sess.status == AutomationSessionStatus.FAILED.value
+    assert job_row.status == AutomationJobStatus.FAILED.value
+
+    pre = db_session.scalars(
+        select(AuditLog).where(
+            AuditLog.event_type == AuditEventType.AUTOMATION_SESSION_START_PRE_ROUND_FAILED.value,
+            AuditLog.entity_id == str(sid),
+        )
+    ).all()
+    assert pre and pre[0].event_payload_json.get("stage") == "workspace_prep"
 
 
 def test_session_start_writes_bootstrap_started_and_success_audit(

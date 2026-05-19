@@ -96,6 +96,7 @@ class AuditEventType(StrEnum):
     AUTOMATION_PR_CREATED = "automation_pr_created"
     AUTOMATION_PR_CREATION_FAILED = "automation_pr_creation_failed"
     AUTOMATION_SESSION_CREATED = "automation_session_created"
+    AUTOMATION_SESSION_START_PRE_ROUND_FAILED = "automation_session_start_pre_round_failed"
     AUTOMATION_ROUND_STARTED = "automation_round_started"
     AUTOMATION_REPO_BOOTSTRAP_STARTED = "automation_repo_bootstrap_started"
     AUTOMATION_REPO_BOOTSTRAP = "automation_repo_bootstrap"

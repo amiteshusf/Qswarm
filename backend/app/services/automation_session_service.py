@@ -45,7 +45,12 @@ from app.services.automation_engine_payload_builder import AutomationEnginePaylo
 from app.services.execution_service import resolve_target_test_file
 from app.services.framework_scan_service import FrameworkScanError
 from app.services.repository_connection_service import get_repository_connection
-from app.services.framework_runtime_errors import HostedExecutionPreparationError
+from app.services.framework_runtime_errors import (
+    FrameworkDetectionError,
+    HostedExecutionPreparationError,
+    RuntimeValidationError,
+    UnsupportedHostedFrameworkError,
+)
 from app.services.framework_runtime_service import (
     build_repo_bootstrap_plan,
     detect_framework_runtime,
@@ -59,6 +64,8 @@ from app.services.repo_bootstrap_service import (
     planned_npm_bootstrap_command,
 )
 from app.services.repo_workspace_service import (
+    RepoAuthError,
+    RepoWorkspaceError,
     prepare_automation_session_workspace,
     resolve_workspace_bootstrap_profile,
 )
@@ -235,6 +242,73 @@ def _map_job_status_to_session(job_status: str) -> AutomationSessionStatus:
 
 def sync_session_status_from_job(session: AutomationSession, job: AutomationJob) -> None:
     session.status = _map_job_status_to_session(job.status).value
+
+
+def _session_start_pre_round_failure_stage(exc: BaseException) -> str:
+    """Classify where start failed before the first revision round is created."""
+    if isinstance(exc, RepoAuthError):
+        return "workspace_clone_auth"
+    if isinstance(exc, RepoWorkspaceError):
+        return "workspace_prep"
+    if isinstance(exc, RepoBootstrapError):
+        if getattr(exc, "code", "") == "repo_bootstrap_workspace_path_missing":
+            return "workspace_prep"
+        return "bootstrap"
+    if isinstance(exc, RuntimeValidationError):
+        return "runtime_validation"
+    if isinstance(exc, FrameworkDetectionError):
+        return "framework_detection"
+    if isinstance(exc, UnsupportedHostedFrameworkError):
+        return "framework_detection"
+    if isinstance(exc, HostedExecutionPreparationError):
+        return "framework_runtime"
+    return "unknown"
+
+
+def _persist_session_start_pre_round_failure(
+    db: Session,
+    *,
+    session: AutomationSession,
+    job: AutomationJob,
+    actor_id: str,
+    exc: BaseException,
+    stage: str,
+) -> None:
+    """Mark session + job failed and audit when start fails before round 1 is created."""
+    msg = getattr(exc, "message", None) or str(exc)
+    code = getattr(exc, "code", None) or "unknown_error"
+    job.status = AutomationJobStatus.FAILED.value
+    job.blocked_reason = (msg[:2048] if msg else None)
+    sync_session_status_from_job(session, job)
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_SESSION_START_PRE_ROUND_FAILED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=actor_id[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_start",
+        entity_type="automation_session",
+        entity_id=str(session.id),
+        payload={
+            "automation_session_id": str(session.id),
+            "automation_job_id": str(job.id),
+            "stage": stage,
+            "code": code,
+            "message": (msg or "")[:4000],
+        },
+    )
+    db.flush()
+    logger.warning(
+        "automation_session_start_pre_round_failed",
+        extra={
+            "automation_session_id": str(session.id),
+            "automation_job_id": str(job.id),
+            "stage": stage,
+            "code": code,
+            "job_repo_path": job.repo_path,
+            "session_repo_path": session.repo_path,
+        },
+    )
 
 
 def _next_plan_version_number(db: Session, session_id: uuid.UUID) -> int:
@@ -518,22 +592,33 @@ def start_automation_session(
     if not aid:
         raise ValueError("actor_missing")
 
-    prep = prepare_automation_session_workspace(
-        db,
-        session=session,
-        job=job,
-        repository_connection_id=repository_connection_id,
-        settings=get_settings(),
+    logger.info(
+        "automation_session_start_entered",
+        extra={"automation_session_id": str(session.id), "automation_job_id": str(job.id)},
     )
-    profile = resolve_workspace_bootstrap_profile(session, job, prep=prep, settings=get_settings())
-    _run_repo_bootstrap_for_session(
-        db,
-        session=session,
-        job=job,
-        actor_id=aid,
-        workspace_profile=profile,
-        prep_mode=prep.mode,
-    )
+    try:
+        prep = prepare_automation_session_workspace(
+            db,
+            session=session,
+            job=job,
+            repository_connection_id=repository_connection_id,
+            settings=get_settings(),
+        )
+        profile = resolve_workspace_bootstrap_profile(session, job, prep=prep, settings=get_settings())
+        _run_repo_bootstrap_for_session(
+            db,
+            session=session,
+            job=job,
+            actor_id=aid,
+            workspace_profile=profile,
+            prep_mode=prep.mode,
+        )
+    except (RepoAuthError, RepoWorkspaceError, RepoBootstrapError, HostedExecutionPreparationError) as e:
+        stage = _session_start_pre_round_failure_stage(e)
+        _persist_session_start_pre_round_failure(
+            db, session=session, job=job, actor_id=aid, exc=e, stage=stage
+        )
+        raise
 
     adapter = resolve_coding_agent_adapter(session.coding_engine)
     rnd = AutomationRevisionRound(
