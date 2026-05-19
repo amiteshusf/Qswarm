@@ -46,6 +46,20 @@ class RuntimeValidationError(HostedExecutionPreparationError):
         super().__init__(message, code=code)
 
 
+class PlaywrightBrowserPreparationError(HostedExecutionPreparationError):
+    """Hosted Playwright browser install (e.g. `npx playwright install chromium`) failed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "playwright_browser_prep_failed",
+        details: dict[str, Any] | None = None,
+    ):
+        self.details = details
+        super().__init__(message, code=code)
+
+
 class ExecutionPlanError(FrameworkRuntimeError):
     """Could not build a safe execution command for the job (e.g. missing target)."""
 

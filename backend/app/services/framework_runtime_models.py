@@ -48,6 +48,32 @@ class RepoBootstrapPlan:
 
 
 @dataclass(frozen=True)
+class PlaywrightBrowserPreparationResult:
+    """Outcome of hosted `npx playwright install` (e.g. chromium) before test execution."""
+
+    command: tuple[str, ...]
+    cwd: str
+    success: bool
+    exit_code: int | None
+    duration_ms: int
+    stdout_tail: str
+    stderr_tail: str
+    notes: str | None = None
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        return {
+            "command": list(self.command),
+            "cwd": self.cwd,
+            "success": self.success,
+            "exit_code": self.exit_code,
+            "duration_ms": self.duration_ms,
+            "stdout_tail": self.stdout_tail,
+            "stderr_tail": self.stderr_tail,
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True)
 class RuntimeValidationResult:
     success: bool
     checks_run: tuple[str, ...]

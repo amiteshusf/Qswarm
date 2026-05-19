@@ -128,6 +128,13 @@ class Settings(BaseSettings):
         alias="QSWARM_SKIP_BOOTSTRAP_IF_NODE_MODULES",
         description="When true, local_existing profile skips npm if node_modules is already populated.",
     )
+    qswarm_playwright_browser_install_timeout_seconds: int = Field(
+        default=900,
+        alias="QSWARM_PLAYWRIGHT_BROWSER_INSTALL_TIMEOUT_SECONDS",
+        ge=60,
+        le=7200,
+        description="Timeout for `npx playwright install chromium` on hosted materialized workspaces.",
+    )
 
     @field_validator("database_url", mode="before")
     @classmethod

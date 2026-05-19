@@ -48,6 +48,7 @@ from app.services.repository_connection_service import get_repository_connection
 from app.services.framework_runtime_errors import (
     FrameworkDetectionError,
     HostedExecutionPreparationError,
+    PlaywrightBrowserPreparationError,
     RuntimeValidationError,
     UnsupportedHostedFrameworkError,
 )
@@ -103,6 +104,8 @@ def _run_repo_bootstrap_for_session(
             "bootstrap_strategy": profile.bootstrap_strategy,
             "repo_bootstrap_plan_strategy": plan.strategy_key,
         }
+        if profile.framework_name == "playwright":
+            gate_extra["planned_playwright_chromium_install"] = ["npx", "playwright", "install", "chromium"]
     else:
         profile = None
         plan = None
@@ -139,6 +142,8 @@ def _run_repo_bootstrap_for_session(
             "validation_paths": list(plan.validation_paths),
             "notes": plan.notes,
         }
+    if profile is not None and profile.framework_name == "playwright":
+        start_payload["planned_playwright_chromium_install"] = ["npx", "playwright", "install", "chromium"]
     audit_service.write_audit(
         db,
         event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP_STARTED.value,
@@ -160,6 +165,8 @@ def _run_repo_bootstrap_for_session(
             done_payload = bootstrap_result_to_audit_payload(res)
             done_payload["framework_runtime_profile"] = hosted.profile.to_audit_dict()
             done_payload["runtime_validation"] = hosted.runtime_validation.to_audit_dict()
+            if hosted.browser_preparation is not None:
+                done_payload["playwright_browser_preparation"] = hosted.browser_preparation.to_audit_dict()
         else:
             res = bootstrap_node_workspace(
                 root,
@@ -179,6 +186,11 @@ def _run_repo_bootstrap_for_session(
             payload=done_payload,
         )
         db.flush()
+        pw_bp = (
+            done_payload.get("playwright_browser_preparation")
+            if workspace_profile == "hosted_materialized"
+            else None
+        )
         logger.info(
             "repo_bootstrap_finished",
             extra={
@@ -189,6 +201,9 @@ def _run_repo_bootstrap_for_session(
                 "success": res.success,
                 "notes": res.notes,
                 "framework_name": framework_name_log,
+                "playwright_browser_prep_success": (
+                    pw_bp.get("success") if isinstance(pw_bp, dict) else None
+                ),
             },
         )
     except (RepoBootstrapError, HostedExecutionPreparationError) as e:
@@ -197,6 +212,10 @@ def _run_repo_bootstrap_for_session(
             det = getattr(e, "details", None)
             if isinstance(det, dict) and det:
                 fail_payload["runtime_validation_details"] = det
+        if isinstance(e, PlaywrightBrowserPreparationError):
+            det = getattr(e, "details", None)
+            if isinstance(det, dict) and det:
+                fail_payload["playwright_browser_prep_details"] = det
         audit_service.write_audit(
             db,
             event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
@@ -261,6 +280,8 @@ def _session_start_pre_round_failure_stage(exc: BaseException) -> str:
         return "bootstrap"
     if isinstance(exc, RuntimeValidationError):
         return "runtime_validation"
+    if isinstance(exc, PlaywrightBrowserPreparationError):
+        return "playwright_browser_prep"
     if isinstance(exc, FrameworkDetectionError):
         return "framework_detection"
     if isinstance(exc, UnsupportedHostedFrameworkError):
@@ -296,6 +317,10 @@ def _persist_session_start_pre_round_failure(
         det = getattr(exc, "details", None)
         if isinstance(det, dict) and det:
             audit_payload["runtime_validation_details"] = det
+    if isinstance(exc, PlaywrightBrowserPreparationError):
+        det = getattr(exc, "details", None)
+        if isinstance(det, dict) and det:
+            audit_payload["playwright_browser_prep_details"] = det
     audit_service.write_audit(
         db,
         event_type=AuditEventType.AUTOMATION_SESSION_START_PRE_ROUND_FAILED.value,

@@ -8,6 +8,7 @@ import pytest
 
 from app.core.config import Settings
 from app.services.framework_runtime_errors import (
+    PlaywrightBrowserPreparationError,
     RuntimeValidationError,
     UnsupportedHostedFrameworkError,
 )
@@ -202,6 +203,8 @@ def test_prepare_hosted_bootstrap_cwd_matches_workspace(tmp_path: Path):
     def fake_run(argv, *, cwd, timeout_seconds, env=None):
         if argv == ["npm", "--version"]:
             return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+        if list(argv)[:4] == ["npx", "playwright", "install", "chromium"]:
+            return {"exit_code": 0, "stdout": "chromium ok\n", "stderr": "", "duration_ms": 1, "timed_out": False}
         root = Path(cwd)
         (root / "node_modules").mkdir(parents=True, exist_ok=True)
         pwt = root / "node_modules" / "@playwright" / "test"
@@ -218,6 +221,62 @@ def test_prepare_hosted_bootstrap_cwd_matches_workspace(tmp_path: Path):
     assert prep.bootstrap_result.diagnostics is not None
     assert prep.bootstrap_result.diagnostics["npm_cwd"] == ws
     assert prep.bootstrap_result.diagnostics["resolved_workspace_path"] == ws
+    assert prep.browser_preparation is not None
+    assert prep.browser_preparation.success is True
+    assert prep.browser_preparation.cwd == ws
+    assert list(prep.browser_preparation.command) == ["npx", "playwright", "install", "chromium"]
+
+
+def test_prepare_hosted_playwright_chromium_install_failure_raises(tmp_path: Path):
+    import json
+
+    (tmp_path / "playwright.config.ts").write_text("export default {};\n")
+    (tmp_path / "package.json").write_text('{"devDependencies":{"@playwright/test":"^1"}}')
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"lockfileVersion": 3, "packages": {"": {"name": "x", "version": "1.0.0"}}})
+    )
+
+    def fake_run(argv, *, cwd, timeout_seconds, env=None):
+        if argv == ["npm", "--version"]:
+            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+        if list(argv)[:4] == ["npx", "playwright", "install", "chromium"]:
+            return {"exit_code": 1, "stdout": "", "stderr": "download failed", "duration_ms": 1, "timed_out": False}
+        root = Path(cwd)
+        (root / "node_modules").mkdir(parents=True, exist_ok=True)
+        pwt = root / "node_modules" / "@playwright" / "test"
+        pwt.mkdir(parents=True, exist_ok=True)
+        (pwt / "package.json").write_text("{}")
+        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+    with pytest.raises(PlaywrightBrowserPreparationError) as ei:
+        prepare_hosted_materialized_execution(
+            tmp_path,
+            settings=Settings(qswarm_bootstrap_timeout_seconds=60),
+            subprocess_runner=fake_run,
+        )
+    assert ei.value.code == "playwright_browser_prep_failed"
+
+
+def test_hosted_webdriverio_prepare_raises_before_playwright_browser_install(tmp_path: Path, monkeypatch):
+    calls: list[int] = []
+
+    def spy(*_a, **_k):
+        calls.append(1)
+        raise AssertionError("browser install should not run for unsupported hosted stacks")
+
+    monkeypatch.setattr(
+        "app.services.framework_runtime_service.run_hosted_playwright_chromium_browser_install",
+        spy,
+    )
+    (tmp_path / "package.json").write_text('{"devDependencies":{"webdriverio":"^8"}}')
+    (tmp_path / "wdio.conf.ts").write_text("exports.config = {};\n")
+    with pytest.raises(UnsupportedHostedFrameworkError):
+        prepare_hosted_materialized_execution(
+            tmp_path,
+            settings=Settings(qswarm_bootstrap_timeout_seconds=60),
+            subprocess_runner=lambda *a, **k: {"exit_code": 0, "stdout": "", "stderr": "", "timed_out": False},
+        )
+    assert calls == []
 
 
 def test_playwright_in_hosted_supported_set():

@@ -2,7 +2,8 @@
 Framework / runtime detection and hosted execution preparation.
 
 Pipeline for hosted materialized workspaces:
-  detect -> bootstrap plan -> npm (when applicable) -> runtime validation -> (execution plan at run time)
+  detect -> bootstrap plan -> npm (when applicable) -> runtime validation ->
+  Playwright browser install (chromium, hosted Playwright only) -> (execution plan at run time)
 
 Playwright is the first fully supported hosted framework. Other stacks are detected and rejected
 cleanly until incremental support is added.
@@ -12,19 +13,23 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from app.adapters.framework.playwright_adapter import PlaywrightAdapter
+from app.automation_engine.cli_subprocess import run_subprocess_argv
 from app.core.config import Settings, get_settings
 from app.services.framework_runtime_models import (
     FrameworkRuntimeProfile,
+    PlaywrightBrowserPreparationResult,
     RepoBootstrapPlan,
     RuntimeValidationResult,
 )
 from app.services.framework_runtime_errors import (
     FrameworkDetectionError,
+    PlaywrightBrowserPreparationError,
     RuntimeValidationError,
     UnsupportedHostedFrameworkError,
 )
@@ -49,11 +54,12 @@ HOSTED_DETECTED_ONLY: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class HostedExecutionPreparation:
-    """Outcome of hosted materialized detect + bootstrap + runtime validation."""
+    """Outcome of hosted materialized detect + bootstrap + runtime validation + browser prep."""
 
     profile: FrameworkRuntimeProfile
     bootstrap_result: RepoBootstrapResult
     runtime_validation: RuntimeValidationResult
+    browser_preparation: PlaywrightBrowserPreparationResult | None = None
 
 
 def _read_package_json(root: Path) -> dict[str, Any] | None:
@@ -473,6 +479,117 @@ def validate_runtime_after_bootstrap(
     )
 
 
+_HOSTED_PLAYWRIGHT_CHROMIUM_INSTALL_ARGV: tuple[str, ...] = ("npx", "playwright", "install", "chromium")
+
+
+def _log_tail(text: str, max_chars: int = 6000) -> str:
+    t = text or ""
+    if len(t) <= max_chars:
+        return t
+    return "…" + t[-max_chars:]
+
+
+def run_hosted_playwright_chromium_browser_install(
+    workspace: Path,
+    *,
+    settings: Settings,
+    subprocess_runner: Callable[..., dict[str, Any]] | None = None,
+) -> PlaywrightBrowserPreparationResult:
+    """
+    Run ``npx playwright install chromium`` in the repo root (hosted materialized Playwright only).
+
+    Uses explicit argv (no shell), same cwd as npm bootstrap and test execution.
+    """
+    ws = workspace.resolve()
+    argv = list(_HOSTED_PLAYWRIGHT_CHROMIUM_INSTALL_ARGV)
+    run = subprocess_runner or run_subprocess_argv
+    timeout = float(settings.qswarm_playwright_browser_install_timeout_seconds)
+    logger.info(
+        "playwright_browser_prep_started",
+        extra={"cwd": str(ws), "command": argv, "framework_name": "playwright"},
+    )
+    t0 = time.perf_counter()
+    out = run(argv, cwd=ws, timeout_seconds=timeout, env=None)
+    duration_ms = int((time.perf_counter() - t0) * 1000)
+    stdout_tail = _log_tail(str(out.get("stdout") or ""))
+    stderr_tail = _log_tail(str(out.get("stderr") or ""))
+
+    if out.get("timed_out"):
+        details: dict[str, Any] = {
+            "cwd": str(ws),
+            "command": argv,
+            "duration_ms": duration_ms,
+            "stdout_tail": stdout_tail[:2000],
+            "stderr_tail": stderr_tail[:2000],
+        }
+        msg = (
+            f"{' '.join(argv)} timed out after {int(timeout)}s (cwd={ws}). "
+            f"stderr tail: {_log_tail(str(out.get('stderr') or ''), 2500)}"
+        )
+        logger.warning(
+            "playwright_browser_prep_failed",
+            extra={"cwd": str(ws), "command": argv, "timed_out": True, "framework_name": "playwright"},
+        )
+        raise PlaywrightBrowserPreparationError(
+            msg.strip(),
+            code="playwright_browser_prep_timeout",
+            details=details,
+        )
+
+    exit_code = out.get("exit_code")
+    success = exit_code == 0
+
+    if not success:
+        details = {
+            "cwd": str(ws),
+            "command": argv,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "stdout_tail": stdout_tail[:2000],
+            "stderr_tail": stderr_tail[:2000],
+        }
+        msg = (
+            f"{' '.join(argv)} failed with exit {exit_code} (cwd={ws}). "
+            f"stderr: {_log_tail(stderr_tail, 2500)} stdout: {_log_tail(stdout_tail, 1500)}"
+        )
+        logger.warning(
+            "playwright_browser_prep_failed",
+            extra={
+                "cwd": str(ws),
+                "command": argv,
+                "exit_code": exit_code,
+                "duration_ms": duration_ms,
+                "framework_name": "playwright",
+            },
+        )
+        raise PlaywrightBrowserPreparationError(
+            msg.strip(),
+            code="playwright_browser_prep_failed",
+            details=details,
+        )
+
+    logger.info(
+        "playwright_browser_prep_completed",
+        extra={
+            "cwd": str(ws),
+            "command": argv,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "framework_name": "playwright",
+        },
+    )
+    return PlaywrightBrowserPreparationResult(
+        command=_HOSTED_PLAYWRIGHT_CHROMIUM_INSTALL_ARGV,
+        cwd=str(ws),
+        success=True,
+        exit_code=int(exit_code) if exit_code is not None else None,
+        duration_ms=duration_ms,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+        notes="npx playwright install chromium exited 0.",
+    )
+
+
 def prepare_hosted_materialized_execution(
     workspace: Path,
     *,
@@ -480,9 +597,10 @@ def prepare_hosted_materialized_execution(
     subprocess_runner: Callable[..., dict[str, Any]] | None = None,
 ) -> HostedExecutionPreparation:
     """
-    Hosted-only: detect framework, enforce support policy, npm bootstrap, runtime validation.
+    Hosted-only: detect framework, enforce support policy, npm bootstrap, runtime validation,
+    then Playwright Chromium install for Playwright workspaces.
 
-    Uses the same resolved workspace directory for npm cwd and validation as execution (repo root).
+    Uses the same resolved workspace directory for npm cwd, browser install cwd, and validation as execution.
     """
     s = settings or get_settings()
     root = workspace.resolve()
@@ -520,4 +638,16 @@ def prepare_hosted_materialized_execution(
     )
 
     runtime = validate_runtime_after_bootstrap(root, profile, res)
-    return HostedExecutionPreparation(profile=profile, bootstrap_result=res, runtime_validation=runtime)
+    browser: PlaywrightBrowserPreparationResult | None = None
+    if profile.framework_name == "playwright":
+        browser = run_hosted_playwright_chromium_browser_install(
+            root,
+            settings=s,
+            subprocess_runner=subprocess_runner,
+        )
+    return HostedExecutionPreparation(
+        profile=profile,
+        bootstrap_result=res,
+        runtime_validation=runtime,
+        browser_preparation=browser,
+    )
