@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class FrameworkRuntimeError(Exception):
     """Base for framework-runtime pipeline errors (message + stable code for APIs)."""
@@ -33,7 +35,14 @@ class UnsupportedHostedFrameworkError(HostedExecutionPreparationError):
 class RuntimeValidationError(HostedExecutionPreparationError):
     """Post-bootstrap workspace does not satisfy runtime readiness for the detected framework."""
 
-    def __init__(self, message: str, *, code: str = "runtime_validation_failed"):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "runtime_validation_failed",
+        details: dict[str, Any] | None = None,
+    ):
+        self.details = details
         super().__init__(message, code=code)
 
 

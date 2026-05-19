@@ -31,6 +31,7 @@ from app.services.framework_runtime_errors import (
 from app.services.repo_bootstrap_service import (
     RepoBootstrapResult,
     bootstrap_node_workspace,
+    package_lock_usable_for_npm_ci,
 )
 
 logger = logging.getLogger(__name__)
@@ -270,10 +271,15 @@ def build_repo_bootstrap_plan(profile: FrameworkRuntimeProfile, workspace: Path)
     if profile.framework_name == "playwright":
         lock = root / "package-lock.json"
         pkg = root / "package.json"
-        if lock.is_file():
+        if lock.is_file() and package_lock_usable_for_npm_ci(root):
             cmd: list[str] | None = ["npm", "ci"]
             strat = "npm_ci"
-            note = "package-lock.json present -> npm ci"
+            note = "package-lock.json usable for npm ci -> npm ci"
+            paths = ("package.json", "package-lock.json", "node_modules", "node_modules/@playwright/test")
+        elif lock.is_file():
+            cmd = ["npm", "install"]
+            strat = "npm_install_lock_unusable"
+            note = "package-lock.json present but not usable for npm ci -> npm install"
             paths = ("package.json", "package-lock.json", "node_modules", "node_modules/@playwright/test")
         elif pkg.is_file():
             cmd = ["npm", "install"]
@@ -320,11 +326,54 @@ def _validate_playwright_npm_layout(
     *,
     npm_command: list[str] | None,
     npm_exit_code: int | None,
+    bootstrap_diagnostics: dict[str, Any] | None = None,
+    stdout_tail: str = "",
+    stderr_tail: str = "",
 ) -> RuntimeValidationResult:
     ws = workspace.resolve()
     checks: list[str] = []
+    pkg_abs = ws / "package.json"
+    nm_abs = ws / "node_modules"
+    pwt_abs = nm_abs / "@playwright" / "test"
 
     def _fail(msg: str, *, path: str) -> None:
+        details: dict[str, Any] = {
+            "resolved_workspace": str(ws),
+            "npm_cwd": str(ws),
+            "npm_command": npm_command,
+            "npm_exit_code": npm_exit_code,
+            "npm_reported_success": npm_exit_code == 0,
+            "absolute_path_checked": path,
+            "package_json_abs": str(pkg_abs),
+            "node_modules_abs": str(nm_abs),
+            "playwright_test_abs": str(pwt_abs),
+            "package_lock_present": bootstrap_diagnostics.get("package_lock_present")
+            if bootstrap_diagnostics
+            else (ws / "package-lock.json").is_file(),
+            "package_lock_usable_for_npm_ci": bootstrap_diagnostics.get("package_lock_usable_for_npm_ci")
+            if bootstrap_diagnostics
+            else None,
+            "node_modules_exists_after": bootstrap_diagnostics.get("node_modules_exists_after")
+            if bootstrap_diagnostics
+            else nm_abs.is_dir(),
+            "playwright_test_pkg_exists_after": bootstrap_diagnostics.get("playwright_test_pkg_exists_after")
+            if bootstrap_diagnostics
+            else pwt_abs.is_dir(),
+            "hosted_bootstrap_env": bootstrap_diagnostics.get("hosted_bootstrap_env") if bootstrap_diagnostics else None,
+            "stdout_tail_short": (stdout_tail or "")[:1500],
+            "stderr_tail_short": (stderr_tail or "")[:1500],
+        }
+        hint = ""
+        if npm_exit_code == 0 and bootstrap_diagnostics and bootstrap_diagnostics.get("hosted_bootstrap_env"):
+            hint = (
+                " If devDependencies were omitted (e.g. NODE_ENV=production), hosted bootstrap now forces "
+                "NPM_CONFIG_PRODUCTION=false for materialized installs; verify install logs if this persists."
+            )
+        full_msg = (
+            f"{msg} cwd={ws} npm={' '.join(npm_command or [])} exit={npm_exit_code} "
+            f"checked={path} lock_present={details['package_lock_present']}"
+            f"{hint}"
+        )
         logger.warning(
             "runtime_validation_failed",
             extra={
@@ -334,11 +383,13 @@ def _validate_playwright_npm_layout(
                 "validation_path_checked": path,
                 "validation_success": False,
                 "framework_name": "playwright",
+                "package_lock_present": details["package_lock_present"],
+                "node_modules_exists_after": details["node_modules_exists_after"],
             },
         )
-        raise RuntimeValidationError(msg, code="runtime_validation_failed")
+        raise RuntimeValidationError(full_msg[:3900], code="runtime_validation_failed", details=details)
 
-    pkg = ws / "package.json"
+    pkg = pkg_abs
     checks.append(str(pkg))
     if not pkg.is_file():
         _fail(
@@ -346,7 +397,7 @@ def _validate_playwright_npm_layout(
             path=str(pkg),
         )
 
-    nm = ws / "node_modules"
+    nm = nm_abs
     checks.append(str(nm))
     if not nm.is_dir():
         _fail(
@@ -354,7 +405,7 @@ def _validate_playwright_npm_layout(
             path=str(nm),
         )
 
-    pwt = nm / "@playwright" / "test"
+    pwt = pwt_abs
     checks.append(str(pwt))
     if not pwt.is_dir():
         _fail(
@@ -416,6 +467,9 @@ def validate_runtime_after_bootstrap(
         workspace,
         npm_command=bootstrap_result.command,
         npm_exit_code=ec,
+        bootstrap_diagnostics=bootstrap_result.diagnostics,
+        stdout_tail=bootstrap_result.stdout_tail or "",
+        stderr_tail=bootstrap_result.stderr_tail or "",
     )
 
 

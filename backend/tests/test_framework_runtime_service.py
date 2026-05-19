@@ -73,14 +73,28 @@ def test_package_json_takes_priority_over_pyproject(tmp_path: Path):
 
 
 def test_node_bootstrap_plan_playwright_lockfile(tmp_path: Path):
+    import json
+
     (tmp_path / "playwright.config.ts").write_text("x")
     (tmp_path / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"lockfileVersion": 3, "packages": {"": {"name": "x", "version": "1.0.0"}}})
+    )
     prof = detect_framework_runtime(tmp_path)
     plan = build_repo_bootstrap_plan(prof, tmp_path)
     assert plan.command == ["npm", "ci"]
     assert plan.required is True
     assert "node_modules/@playwright/test" in plan.validation_paths
+
+
+def test_node_bootstrap_plan_playwright_lockfile_unusable(tmp_path: Path):
+    (tmp_path / "playwright.config.ts").write_text("x")
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    prof = detect_framework_runtime(tmp_path)
+    plan = build_repo_bootstrap_plan(prof, tmp_path)
+    assert plan.command == ["npm", "install"]
+    assert plan.strategy_key == "npm_install_lock_unusable"
 
 
 def test_node_bootstrap_plan_playwright_package_only(tmp_path: Path):
@@ -144,6 +158,9 @@ def test_playwright_runtime_validation_missing_package(tmp_path: Path):
     with pytest.raises(RuntimeValidationError) as ei:
         validate_runtime_after_bootstrap(tmp_path, pw, br)
     assert ei.value.code == "runtime_validation_failed"
+    assert ei.value.details is not None
+    assert ei.value.details.get("npm_exit_code") == 0
+    assert "playwright_test_abs" in ei.value.details
 
 
 def test_unsupported_hosted_raises_for_cypress(tmp_path: Path):
@@ -171,6 +188,36 @@ def test_hosted_playwright_prepare_blocks_when_validation_fails(tmp_path: Path):
             settings=Settings(qswarm_bootstrap_timeout_seconds=60),
             subprocess_runner=fake_run,
         )
+
+
+def test_prepare_hosted_bootstrap_cwd_matches_workspace(tmp_path: Path):
+    import json
+
+    (tmp_path / "playwright.config.ts").write_text("export default {};\n")
+    (tmp_path / "package.json").write_text('{"devDependencies":{"@playwright/test":"^1"}}')
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"lockfileVersion": 3, "packages": {"": {"name": "x", "version": "1.0.0"}}})
+    )
+
+    def fake_run(argv, *, cwd, timeout_seconds, env=None):
+        if argv == ["npm", "--version"]:
+            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+        root = Path(cwd)
+        (root / "node_modules").mkdir(parents=True, exist_ok=True)
+        pwt = root / "node_modules" / "@playwright" / "test"
+        pwt.mkdir(parents=True, exist_ok=True)
+        (pwt / "package.json").write_text("{}")
+        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+    prep = prepare_hosted_materialized_execution(
+        tmp_path,
+        settings=Settings(qswarm_bootstrap_timeout_seconds=60),
+        subprocess_runner=fake_run,
+    )
+    ws = str(tmp_path.resolve())
+    assert prep.bootstrap_result.diagnostics is not None
+    assert prep.bootstrap_result.diagnostics["npm_cwd"] == ws
+    assert prep.bootstrap_result.diagnostics["resolved_workspace_path"] == ws
 
 
 def test_playwright_in_hosted_supported_set():

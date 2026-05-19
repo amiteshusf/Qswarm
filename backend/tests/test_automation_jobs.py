@@ -1,5 +1,6 @@
 """Automation job API tests."""
 
+import json
 import uuid
 
 from pathlib import Path
@@ -15,7 +16,9 @@ from app.db.models.automation_job_review_action import AutomationJobReviewAction
 def _playwright_fixture_repo(root: Path) -> None:
     (root / "playwright.config.ts").write_text("export default {};\n")
     (root / "package.json").write_text('{"devDependencies":{"@playwright/test":"^1.0.0"}}')
-    (root / "package-lock.json").write_text("{}")
+    # Minimal coherent lock so `npm ci` selection matches real repos (empty `{}` is not usable for npm ci).
+    lock = {"lockfileVersion": 3, "packages": {"": {"name": "fixture", "version": "1.0.0"}}}
+    (root / "package-lock.json").write_text(json.dumps(lock))
     nm = root / "node_modules"
     nm.mkdir(exist_ok=True)
     (nm / ".qswarm_test_stub").write_text("1")

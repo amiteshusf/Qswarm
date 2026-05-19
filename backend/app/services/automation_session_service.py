@@ -192,6 +192,11 @@ def _run_repo_bootstrap_for_session(
             },
         )
     except (RepoBootstrapError, HostedExecutionPreparationError) as e:
+        fail_payload: dict[str, Any] = {"success": False, "code": e.code, "message": e.message[:4000]}
+        if isinstance(e, RuntimeValidationError):
+            det = getattr(e, "details", None)
+            if isinstance(det, dict) and det:
+                fail_payload["runtime_validation_details"] = det
         audit_service.write_audit(
             db,
             event_type=AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
@@ -201,7 +206,7 @@ def _run_repo_bootstrap_for_session(
             step_name="repo_bootstrap",
             entity_type="automation_job",
             entity_id=str(job.id),
-            payload={"success": False, "code": e.code, "message": e.message[:4000]},
+            payload=fail_payload,
         )
         db.flush()
         log_key = (
@@ -280,6 +285,17 @@ def _persist_session_start_pre_round_failure(
     job.status = AutomationJobStatus.FAILED.value
     job.blocked_reason = (msg[:2048] if msg else None)
     sync_session_status_from_job(session, job)
+    audit_payload: dict[str, Any] = {
+        "automation_session_id": str(session.id),
+        "automation_job_id": str(job.id),
+        "stage": stage,
+        "code": code,
+        "message": (msg or "")[:4000],
+    }
+    if isinstance(exc, RuntimeValidationError):
+        det = getattr(exc, "details", None)
+        if isinstance(det, dict) and det:
+            audit_payload["runtime_validation_details"] = det
     audit_service.write_audit(
         db,
         event_type=AuditEventType.AUTOMATION_SESSION_START_PRE_ROUND_FAILED.value,
@@ -289,13 +305,7 @@ def _persist_session_start_pre_round_failure(
         step_name="automation_session_start",
         entity_type="automation_session",
         entity_id=str(session.id),
-        payload={
-            "automation_session_id": str(session.id),
-            "automation_job_id": str(job.id),
-            "stage": stage,
-            "code": code,
-            "message": (msg or "")[:4000],
-        },
+        payload=audit_payload,
     )
     db.flush()
     logger.warning(
