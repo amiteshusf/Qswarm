@@ -561,6 +561,15 @@ def create_pr(job_id: uuid.UUID, body: AutomationJobCreatePrRequest, db: DbSessi
                     "and a valid git repo_path are required",
                 ).model_dump(),
             ) from e
+        if msg == "pr_git_author_not_configured":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorDetail(
+                    code="pr_git_author_not_configured",
+                    message="Set QSWARM_GIT_AUTHOR_NAME and QSWARM_GIT_AUTHOR_EMAIL (non-empty, valid email) "
+                    "for repo-local git commits during PR creation.",
+                ).model_dump(),
+            ) from e
         raise
 
     db.commit()

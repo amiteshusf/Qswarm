@@ -100,6 +100,16 @@ class Settings(BaseSettings):
     github_default_repo_owner: str = Field(default="", alias="GITHUB_DEFAULT_REPO_OWNER")
     github_default_repo_name: str = Field(default="", alias="GITHUB_DEFAULT_REPO_NAME")
     github_api_base_url: str = Field(default="https://api.github.com", alias="GITHUB_API_BASE_URL")
+    qswarm_git_author_name: str = Field(
+        default="",
+        alias="QSWARM_GIT_AUTHOR_NAME",
+        description="Commit author name for PR creation (repo-local git config, not global).",
+    )
+    qswarm_git_author_email: str = Field(
+        default="",
+        alias="QSWARM_GIT_AUTHOR_EMAIL",
+        description="Commit author email for PR creation (repo-local git config, not global).",
+    )
 
     # Managed workspaces for hosted session start (git clone under this root).
     qswarm_workspace_root: str = Field(default="/tmp/qswarm", alias="QSWARM_WORKSPACE_ROOT")

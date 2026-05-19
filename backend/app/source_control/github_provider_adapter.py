@@ -22,9 +22,11 @@ from app.services.git_workspace_service import (
     abort_merge_if_in_progress,
     create_commit,
     ensure_branch,
+    ensure_git_author_identity,
     ensure_git_repo,
     fetch_base_branch,
     get_head_sha,
+    git_author_from_settings,
     push_branch as git_push_branch,
     refresh_branch_from_base,
     stage_all_changes,
@@ -104,11 +106,20 @@ class GitHubSourceControlAdapter(SourceControlProviderAdapterBase):
     ) -> str:
         try:
             repo = ensure_git_repo(repo_root)
+            ensure_git_author_identity(repo, settings=self._s())
             if not working_tree_has_changes(repo):
                 raise GitWorkspaceError("nothing to commit: working tree clean")
             stage_all_changes(repo)
             create_commit(repo, message[:72])
             return get_head_sha(repo)
+        except ValueError as e:
+            if str(e) == "pr_git_author_not_configured":
+                raise SourceControlConfigurationError(
+                    "Set QSWARM_GIT_AUTHOR_NAME and QSWARM_GIT_AUTHOR_EMAIL (non-empty, valid email) "
+                    "so QSwarm can configure repo-local git identity before commit.",
+                    code="pr_git_author_not_configured",
+                ) from e
+            raise
         except GitWorkspaceError as e:
             raise SourceControlRepoError(e.message, code="source_control_repo") from e
 
@@ -177,6 +188,17 @@ class GitHubSourceControlAdapter(SourceControlProviderAdapterBase):
         """
         aid = actor_id.strip() or job.requested_by
         s = self._s()
+
+        try:
+            git_author_from_settings(s)
+        except ValueError as e:
+            if str(e) == "pr_git_author_not_configured":
+                raise SourceControlConfigurationError(
+                    "Set QSWARM_GIT_AUTHOR_NAME and QSWARM_GIT_AUTHOR_EMAIL (non-empty, valid email) "
+                    "so QSwarm can configure repo-local git identity before commit.",
+                    code="pr_git_author_not_configured",
+                ) from e
+            raise
 
         try:
             repo = ensure_git_repo(resolve_repo_path(repo_path))
@@ -257,6 +279,7 @@ class GitHubSourceControlAdapter(SourceControlProviderAdapterBase):
                     "nothing to commit: working tree clean after refresh",
                     code="source_control_repo",
                 )
+            ensure_git_author_identity(repo, settings=s)
             stage_all_changes(repo)
             msg = f"test: automate {job.approved_case_id}"[:72]
             create_commit(repo, msg)

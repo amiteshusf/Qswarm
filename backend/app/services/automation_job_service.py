@@ -976,7 +976,7 @@ def create_pr_for_automation_job(
     Pre-PR base refresh, optional Playwright re-run, commit, push, GitHub PR.
 
     Returns ``(job, pr_record)``. Raises ``ValueError`` for ``job_not_found``,
-    ``pr_wrong_state``, ``pr_prerequisites_missing``.
+    ``pr_wrong_state``, ``pr_prerequisites_missing``, ``pr_git_author_not_configured``.
     """
     job = db.get(AutomationJob, job_id)
     if job is None:

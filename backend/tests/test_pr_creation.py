@@ -23,6 +23,8 @@ class _FakeSettings:
     github_default_repo_owner = "acme"
     github_default_repo_name = "webapp"
     github_api_base_url = "https://api.github.com"
+    qswarm_git_author_name = "QSwarm Test Bot"
+    qswarm_git_author_email = "qswarm-test@example.com"
 
 
 def _job_at_approved_for_pr(client, tmp_path: Path, monkeypatch, *, case_id: str = "CASE-PR-OK") -> str:
@@ -64,6 +66,7 @@ def test_create_pr_success_persists_record_and_pr_created(client, tmp_path: Path
         "app.services.pr_creation_service.ensure_git_repo",
         lambda p: Path(p).resolve(),
     )
+    monkeypatch.setattr("app.services.pr_creation_service.ensure_git_author_identity", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.ensure_branch", lambda *a, **k: None)
     monkeypatch.setattr(
         "app.services.pr_creation_service.fetch_base_branch",
@@ -140,6 +143,7 @@ def test_create_pr_base_refresh_conflict_human_input(client, tmp_path: Path, mon
         "app.services.pr_creation_service.ensure_git_repo",
         lambda p: Path(p).resolve(),
     )
+    monkeypatch.setattr("app.services.pr_creation_service.ensure_git_author_identity", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.ensure_branch", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.fetch_base_branch", lambda *a, **k: {"fetched": True})
     monkeypatch.setattr(
@@ -178,6 +182,7 @@ def test_create_pr_execution_fails_after_refresh_no_pr(client, tmp_path: Path, m
         "app.services.pr_creation_service.ensure_git_repo",
         lambda p: Path(p).resolve(),
     )
+    monkeypatch.setattr("app.services.pr_creation_service.ensure_git_author_identity", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.ensure_branch", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.fetch_base_branch", lambda *a, **k: {"fetched": True})
     monkeypatch.setattr(
@@ -235,6 +240,7 @@ def test_create_pr_github_api_error_failed(client, tmp_path: Path, monkeypatch):
         "app.services.pr_creation_service.ensure_git_repo",
         lambda p: Path(p).resolve(),
     )
+    monkeypatch.setattr("app.services.pr_creation_service.ensure_git_author_identity", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.ensure_branch", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.fetch_base_branch", lambda *a, **k: {"fetched": True})
     monkeypatch.setattr(
@@ -263,6 +269,7 @@ def test_create_pr_audit_events_on_success(client, tmp_path: Path, monkeypatch, 
         "app.services.pr_creation_service.ensure_git_repo",
         lambda p: Path(p).resolve(),
     )
+    monkeypatch.setattr("app.services.pr_creation_service.ensure_git_author_identity", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.ensure_branch", lambda *a, **k: None)
     monkeypatch.setattr("app.services.pr_creation_service.fetch_base_branch", lambda *a, **k: {"fetched": True})
     monkeypatch.setattr(
@@ -292,6 +299,60 @@ def test_create_pr_audit_events_on_success(client, tmp_path: Path, monkeypatch, 
     assert AuditEventType.AUTOMATION_BASE_REFRESH_COMPLETED.value in types
     assert AuditEventType.AUTOMATION_COMMIT_CREATED.value in types
     assert AuditEventType.AUTOMATION_PR_CREATED.value in types
+
+
+def test_create_pr_missing_git_author_returns_400(client, tmp_path: Path, monkeypatch):
+    jid = _job_at_approved_for_pr(client, tmp_path, monkeypatch, case_id="CASE-PR-AUTH")
+
+    class _NoAuthor(_FakeSettings):
+        qswarm_git_author_name = ""
+        qswarm_git_author_email = ""
+
+    monkeypatch.setattr("app.services.pr_creation_service.get_settings", lambda: _NoAuthor())
+    r = client.post(f"/automation/jobs/{jid}/create-pr", json={})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "pr_git_author_not_configured"
+
+
+def test_create_pr_invokes_git_author_identity_before_commit(client, tmp_path: Path, monkeypatch, db_session):
+    import app.services.pr_creation_service as pcs
+
+    jid = _job_at_approved_for_pr(client, tmp_path, monkeypatch, case_id="CASE-PR-ORDER")
+
+    order: list[str] = []
+
+    def track_ensure(repo, *, settings):
+        order.append("ensure_git_author")
+
+    def track_stage(repo):
+        order.append("stage")
+
+    def track_commit(repo, m):
+        order.append("commit")
+
+    monkeypatch.setattr(
+        "app.services.pr_creation_service.ensure_git_repo",
+        lambda p: Path(p).resolve(),
+    )
+    monkeypatch.setattr("app.services.pr_creation_service.ensure_branch", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.pr_creation_service.fetch_base_branch", lambda *a, **k: {"fetched": True})
+    monkeypatch.setattr(
+        "app.services.pr_creation_service.refresh_branch_from_base",
+        lambda *a, **k: {"base_branch": "main", "updated": False, "conflicted": False, "conflict_files": [], "notes": []},
+    )
+    monkeypatch.setattr("app.services.pr_creation_service.working_tree_has_changes", lambda r: True)
+    monkeypatch.setattr(pcs, "ensure_git_author_identity", track_ensure)
+    monkeypatch.setattr(pcs, "stage_all_changes", track_stage)
+    monkeypatch.setattr(pcs, "create_commit", track_commit)
+    monkeypatch.setattr("app.services.pr_creation_service.get_head_sha", lambda r: "abccommit")
+    monkeypatch.setattr("app.services.pr_creation_service.push_branch", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.pr_creation_service.create_pull_request",
+        lambda **kw: {"number": 42, "html_url": "https://github.com/acme/webapp/pull/42"},
+    )
+
+    assert client.post(f"/automation/jobs/{jid}/create-pr", json={}).status_code == 200
+    assert order == ["ensure_git_author", "stage", "commit"]
 
 
 def test_git_workspace_job_branch_name_shape():

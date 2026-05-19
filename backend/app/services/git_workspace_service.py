@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import uuid
@@ -10,6 +11,8 @@ from typing import Any
 
 DEFAULT_REMOTE = "origin"
 GIT_TIMEOUT_S = 120
+
+logger = logging.getLogger(__name__)
 
 
 class GitWorkspaceError(Exception):
@@ -42,6 +45,43 @@ def ensure_git_repo(repo_path: str | Path) -> Path:
     if r.stdout.strip().lower() != "true":
         raise GitWorkspaceError("not a git repository")
     return p
+
+
+def git_author_from_settings(settings: Any) -> tuple[str, str]:
+    """
+    Resolve and validate commit author from settings.
+
+    Raises:
+        ValueError: ``pr_git_author_not_configured`` when name/email are missing or email is unusable.
+    """
+    name = (getattr(settings, "qswarm_git_author_name", None) or "").strip()
+    email = (getattr(settings, "qswarm_git_author_email", None) or "").strip()
+    if not name or not email:
+        raise ValueError("pr_git_author_not_configured")
+    local, sep, domain = email.partition("@")
+    if not sep or not local or not domain or " " in email:
+        raise ValueError("pr_git_author_not_configured")
+    return name, email
+
+
+def ensure_git_author_identity(repo: Path, *, settings: Any) -> None:
+    """
+    Apply repo-local ``git config user.name`` / ``user.email`` (no ``--global``) before commit.
+
+    Raises:
+        ValueError: ``pr_git_author_not_configured`` if settings are invalid.
+        GitWorkspaceError: if ``git config`` returns non-zero.
+    """
+    name, email = git_author_from_settings(settings)
+    for key, val in (("user.name", name), ("user.email", email)):
+        r = _run_git(repo, ["config", key, val])
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "git config failed").strip()[:2048]
+            raise GitWorkspaceError(f"git config {key} failed: {err}")
+    logger.info(
+        "git_author_identity_configured",
+        extra={"repo": str(repo.resolve()), "scope": "local"},
+    )
 
 
 def has_git_remote(repo: Path, remote: str = DEFAULT_REMOTE) -> bool:

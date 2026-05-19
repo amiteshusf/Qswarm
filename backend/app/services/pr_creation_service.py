@@ -20,8 +20,10 @@ from app.services.git_workspace_service import (
     abort_merge_if_in_progress,
     create_commit,
     ensure_branch,
+    ensure_git_author_identity,
     ensure_git_repo,
     fetch_base_branch,
+    git_author_from_settings,
     get_head_sha,
     job_branch_name,
     push_branch,
@@ -104,7 +106,7 @@ def create_pull_request_for_job(
     Full PR pipeline for ``approved_for_pr`` jobs.
 
     Raises:
-        ValueError: ``pr_wrong_state``, ``pr_prerequisites_missing``.
+        ValueError: ``pr_wrong_state``, ``pr_prerequisites_missing``, ``pr_git_author_not_configured``.
     """
     if job.status != AutomationJobStatus.APPROVED_FOR_PR.value:
         raise ValueError("pr_wrong_state")
@@ -115,6 +117,7 @@ def create_pull_request_for_job(
     token = (s.github_token or "").strip()
     if not token:
         raise ValueError("pr_prerequisites_missing")
+    git_author_from_settings(s)
 
     own, rep = _resolve_github_repo(job, repo_owner=repo_owner, repo_name=repo_name)
 
@@ -285,6 +288,7 @@ def create_pull_request_for_job(
         if not working_tree_has_changes(repo):
             _fail_pr("nothing to commit: working tree clean after refresh")
             return pr_row
+        ensure_git_author_identity(repo, settings=s)
         stage_all_changes(repo)
         create_commit(repo, f"test: automate {job.approved_case_id}"[:72])
     except GitWorkspaceError as e:
