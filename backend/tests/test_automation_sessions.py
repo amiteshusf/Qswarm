@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from app.core.constants import AuditEventType, AutomationJobStatus, AutomationSessionStatus
 from app.db.models.audit_log import AuditLog
+from app.db.models.automation_execution_attempt import AutomationExecutionAttempt
 from app.db.models.automation_job import AutomationJob
 from app.db.models.automation_patch_version import AutomationPatchVersion
 from app.db.models.automation_plan_version import AutomationPlanVersion
@@ -19,6 +20,7 @@ from test_automation_jobs import (
     _playwright_fixture_repo,
     _stub_execution_run_factory,
 )
+from test_repo_bootstrap_service import _fake_npm_run_populates_hosted_layout
 
 
 def _create_session(client, tmp_path: Path, *, case_id: str = "SESS-001", source: str | None = "jira"):
@@ -307,7 +309,7 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
     def fake_bootstrap(workspace, *, workspace_profile, settings=None, subprocess_runner=None):
         def fake_run(argv, *, cwd, timeout_seconds, env=None):
             npm_calls.append(list(argv))
-            return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+            return _fake_npm_run_populates_hosted_layout(argv, cwd=cwd, timeout_seconds=timeout_seconds, env=env)
 
         return real_bootstrap(
             workspace,
@@ -360,6 +362,111 @@ def test_session_start_after_materialized_workspace_stub(client, tmp_path: Path,
     job = db_session.get(AutomationJob, jid)
     assert job.repo_path == str(ws.resolve())
     assert any(c[:2] == ["npm", "ci"] for c in npm_calls), "hosted clone must run npm ci before execution"
+
+    boot_fin = db_session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_id == str(jid),
+            AuditLog.event_type == AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value,
+        )
+        .order_by(AuditLog.created_at)
+    ).all()
+    assert boot_fin, "expected bootstrap completion audit"
+    iv = boot_fin[-1].event_payload_json.get("install_validation") or {}
+    assert iv.get("bootstrap_cwd") == str(ws.resolve())
+    assert iv.get("playwright_repo") is True
+
+
+def test_session_start_hosted_validation_failure_blocks_execution_and_no_attempts(
+    client, tmp_path: Path, monkeypatch, db_session
+):
+    import app.services.automation_session_service as ss
+    from app.core.config import Settings
+    from app.services.repo_bootstrap_service import bootstrap_node_workspace as real_bootstrap
+
+    conn = create_repository_connection(
+        db_session,
+        provider="github",
+        display_name="Demo",
+        owner_or_org="acme",
+        repo_name="widget",
+        created_by="u",
+    )
+    db_session.commit()
+
+    ws = tmp_path / "mat_bad"
+    ws.mkdir(parents=True, exist_ok=True)
+    _playwright_fixture_repo(ws)
+
+    exec_calls: list[uuid.UUID] = []
+
+    def track_execute(db, job_id, *, actor_id=None):
+        exec_calls.append(job_id)
+
+    def fake_bootstrap(workspace, *, workspace_profile, settings=None, subprocess_runner=None):
+        def fake_run(argv, *, cwd, timeout_seconds, env=None):
+            if argv == ["npm", "--version"]:
+                return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+            return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+        return real_bootstrap(
+            workspace,
+            workspace_profile=workspace_profile,
+            settings=settings or Settings(qswarm_bootstrap_timeout_seconds=120),
+            subprocess_runner=fake_run,
+        )
+
+    def fake_prepare(db, *, session, job, repository_connection_id=None, settings=None):
+        rp = str(ws.resolve())
+        job.repo_path = rp
+        session.repo_path = rp
+        db.flush()
+        return WorkspacePreparationResult(
+            mode="cloned_workspace",
+            workspace_path=rp,
+            clone_url_used="https://github.com/acme/widget.git",
+            provider="github",
+            target_branch="main",
+            source_reference=None,
+        )
+
+    monkeypatch.setattr(ss, "prepare_automation_session_workspace", fake_prepare)
+    monkeypatch.setattr(ss, "bootstrap_node_workspace", fake_bootstrap)
+    monkeypatch.setattr("app.services.automation_job_service.execute_automation_job", track_execute)
+    monkeypatch.setattr(
+        "app.services.automation_job_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+    monkeypatch.setattr(
+        "app.services.automation_review_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+
+    cr = client.post(
+        "/automation/sessions",
+        json={
+            "approved_case_id": "SESS-MAT-VAL",
+            "created_by": "runner",
+            "coding_engine": "stub",
+            "repository_connection_id": str(conn.id),
+            "case_title": "T",
+            "steps": ["open"],
+        },
+    )
+    assert cr.status_code == 201, cr.text
+    sid = uuid.UUID(cr.json()["id"])
+    jid = uuid.UUID(cr.json()["automation_job_id"])
+    st = client.post(f"/automation/sessions/{sid}/start", json={})
+    assert st.status_code == 400, st.text
+    assert st.json()["detail"]["code"] == "repo_bootstrap_validation_failed"
+    assert exec_calls == []
+
+    n_attempts = db_session.scalar(
+        select(func.count())
+        .select_from(AutomationExecutionAttempt)
+        .where(AutomationExecutionAttempt.automation_session_id == sid)
+    )
+    assert int(n_attempts or 0) == 0
 
 
 def test_session_start_invokes_bootstrap(client, tmp_path: Path, monkeypatch, db_session):

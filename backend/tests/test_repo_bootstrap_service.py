@@ -7,14 +7,31 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.adapters.framework.playwright_adapter import PlaywrightAdapter
 from app.core.config import Settings
 from app.services.repo_bootstrap_service import (
     RepoBootstrapCommandMissingError,
     RepoBootstrapError,
     RepoBootstrapTimeoutError,
+    RepoBootstrapValidationError,
     bootstrap_node_workspace,
     bootstrap_result_to_audit_payload,
 )
+
+
+def _fake_npm_run_populates_hosted_layout(argv, *, cwd, timeout_seconds, env=None):
+    """Mimic successful npm leaving a tree that passes hosted post-install validation."""
+    if argv == ["npm", "--version"]:
+        return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+    if list(argv)[:2] in (["npm", "ci"], ["npm", "install"]):
+        root = Path(cwd)
+        nm = root / "node_modules"
+        nm.mkdir(parents=True, exist_ok=True)
+        if PlaywrightAdapter().detect(root):
+            pwt = nm / "@playwright" / "test"
+            pwt.mkdir(parents=True, exist_ok=True)
+            (pwt / "package.json").write_text("{}")
+    return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
 
 
 def test_lockfile_selects_npm_ci(tmp_path: Path):
@@ -24,7 +41,7 @@ def test_lockfile_selects_npm_ci(tmp_path: Path):
 
     def fake_run(argv, *, cwd, timeout_seconds, env=None):
         calls.append(list(argv))
-        return {"exit_code": 0, "stdout": "ok", "stderr": "", "duration_ms": 1, "timed_out": False}
+        return _fake_npm_run_populates_hosted_layout(argv, cwd=cwd, timeout_seconds=timeout_seconds, env=env)
 
     r = bootstrap_node_workspace(
         tmp_path,
@@ -44,7 +61,7 @@ def test_package_json_only_selects_npm_install(tmp_path: Path):
 
     def fake_run(argv, *, cwd, timeout_seconds, env=None):
         calls.append(list(argv))
-        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+        return _fake_npm_run_populates_hosted_layout(argv, cwd=cwd, timeout_seconds=timeout_seconds, env=env)
 
     r = bootstrap_node_workspace(
         tmp_path,
@@ -102,7 +119,7 @@ def test_hosted_materialized_runs_even_with_node_modules(tmp_path: Path):
 
     def fake_run(argv, *, cwd, timeout_seconds, env=None):
         ran.append(list(argv))
-        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+        return _fake_npm_run_populates_hosted_layout(argv, cwd=cwd, timeout_seconds=timeout_seconds, env=env)
 
     bootstrap_node_workspace(
         tmp_path,
@@ -169,6 +186,69 @@ def test_timeout_raises(tmp_path: Path):
     assert ei.value.code == "repo_bootstrap_timeout"
 
 
+def test_hosted_validation_fails_if_node_modules_missing_after_npm(tmp_path: Path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    def fake_run(argv, *, cwd, timeout_seconds, env=None):
+        if argv == ["npm", "--version"]:
+            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+    with pytest.raises(RepoBootstrapValidationError) as ei:
+        bootstrap_node_workspace(
+            tmp_path,
+            workspace_profile="hosted_materialized",
+            settings=Settings(qswarm_bootstrap_timeout_seconds=60),
+            subprocess_runner=fake_run,
+        )
+    assert ei.value.code == "repo_bootstrap_validation_failed"
+
+
+def test_hosted_validation_fails_if_playwright_test_missing(tmp_path: Path):
+    (tmp_path / "playwright.config.ts").write_text("export default {};\n")
+    (tmp_path / "package.json").write_text('{"devDependencies":{"@playwright/test":"^1.0.0"}}')
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    def fake_run(argv, *, cwd, timeout_seconds, env=None):
+        if argv == ["npm", "--version"]:
+            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+        if list(argv)[:2] == ["npm", "ci"]:
+            (Path(cwd) / "node_modules").mkdir(parents=True, exist_ok=True)
+        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+    with pytest.raises(RepoBootstrapValidationError) as ei:
+        bootstrap_node_workspace(
+            tmp_path,
+            workspace_profile="hosted_materialized",
+            settings=Settings(qswarm_bootstrap_timeout_seconds=60),
+            subprocess_runner=fake_run,
+        )
+    assert ei.value.code == "repo_bootstrap_validation_failed"
+    assert "@playwright/test" in ei.value.message
+
+
+def test_local_existing_npm_success_does_not_run_hosted_post_install_validation(tmp_path: Path):
+    """Local profile: npm exit 0 is enough; no strict filesystem gate (preserve local behavior)."""
+    (tmp_path / "package.json").write_text("{}")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, cwd, timeout_seconds, env=None):
+        calls.append(list(argv))
+        if argv == ["npm", "--version"]:
+            return {"exit_code": 0, "stdout": "10", "stderr": "", "duration_ms": 1, "timed_out": False}
+        return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
+
+    r = bootstrap_node_workspace(
+        tmp_path,
+        workspace_profile="local_existing",
+        settings=Settings(qswarm_bootstrap_timeout_seconds=60, qswarm_skip_bootstrap_if_node_modules=False),
+        subprocess_runner=fake_run,
+    )
+    assert r.bootstrap_required is True
+    assert r.install_validation is None
+
+
 def test_audit_payload_shape():
     r = MagicMock()
     r.detected_stack = "node_npm_lockfile"
@@ -180,6 +260,8 @@ def test_audit_payload_shape():
     r.stdout_tail = "ok"
     r.stderr_tail = "warn"
     r.notes = None
+    r.install_validation = {"bootstrap_cwd": "/tmp/r", "playwright_repo": False}
     p = bootstrap_result_to_audit_payload(r)
     assert p["command"] == ["npm", "ci"]
+    assert p["install_validation"]["playwright_repo"] is False
     assert "token" not in str(p).lower()
