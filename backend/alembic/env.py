@@ -27,6 +27,7 @@ from app.db.models import (  # noqa: F401 — register metadata
     TestDesignFeedback,
     TestDesignVersion,
     WorkflowRun,
+    WorkspaceCacheEntry,
 )
 
 config = context.config

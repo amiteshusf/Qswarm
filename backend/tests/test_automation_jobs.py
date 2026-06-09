@@ -27,6 +27,31 @@ def _playwright_fixture_repo(root: Path) -> None:
     (d / "smoke.spec.ts").write_text("// test\n")
 
 
+def _ensure_git_repo_for_session_pr(root: Path) -> None:
+    """Minimal git work tree so session create-pr workspace checks pass before the pipeline runs."""
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    subprocess.run(["git", "init"], cwd=str(root), check=True, capture_output=True, env=env)
+    subprocess.run(
+        ["git", "config", "user.email", "fixture@test.local"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "fixture"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True, capture_output=True, env=env)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(root), check=True, capture_output=True, env=env)
+
+
 def _playwright_auth_repo(root: Path) -> None:
     _playwright_fixture_repo(root)
     auth = root / "tests" / "auth"

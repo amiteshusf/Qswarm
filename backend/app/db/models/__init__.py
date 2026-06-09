@@ -22,6 +22,7 @@ from app.db.models.pr_record import PrRecord
 from app.db.models.test_design_feedback import TestDesignFeedback
 from app.db.models.test_design_version import TestDesignVersion
 from app.db.models.workflow_run import WorkflowRun
+from app.db.models.workspace_cache_entry import WorkspaceCacheEntry
 
 __all__ = [
     "AgentArtifact",
@@ -46,4 +47,5 @@ __all__ = [
     "TestDesignFeedback",
     "TestDesignVersion",
     "WorkflowRun",
+    "WorkspaceCacheEntry",
 ]

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from app.db.models.automation_review_request import AutomationReviewRequest
     from app.db.models.code_review_request import CodeReviewRequest
     from app.db.models.workflow_run import WorkflowRun
+    from app.db.models.workspace_cache_entry import WorkspaceCacheEntry
 
 
 class AutomationSession(Base):
@@ -97,6 +98,11 @@ class AutomationSession(Base):
     )
     code_review_requests: Mapped[list["CodeReviewRequest"]] = relationship(
         "CodeReviewRequest",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    workspace_cache_entries: Mapped[list["WorkspaceCacheEntry"]] = relationship(
+        "WorkspaceCacheEntry",
         back_populates="session",
         cascade="all, delete-orphan",
     )

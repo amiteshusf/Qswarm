@@ -113,6 +113,13 @@ class Settings(BaseSettings):
 
     # Managed workspaces for hosted session start (git clone under this root).
     qswarm_workspace_root: str = Field(default="/tmp/qswarm", alias="QSWARM_WORKSPACE_ROOT")
+    qswarm_workspace_cache_ttl_minutes: int = Field(
+        default=60,
+        alias="QSWARM_WORKSPACE_CACHE_TTL_MINUTES",
+        ge=5,
+        le=10080,
+        description="Idle TTL for cached hosted session workspaces (create-pr rebuild hints).",
+    )
     qswarm_git_clone_timeout_seconds: int = Field(
         default=600,
         alias="QSWARM_GIT_CLONE_TIMEOUT_SECONDS",

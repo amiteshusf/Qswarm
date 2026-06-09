@@ -127,6 +127,7 @@ Sprint 1 can still be started explicitly via `POST /workflow/runs` and `POST /wo
 | `QSWARM_GIT_AUTHOR_NAME` | Commit author **name** for PR creation (`git config user.name` in the repo only; required with **`QSWARM_GIT_AUTHOR_EMAIL`**) |
 | `QSWARM_GIT_AUTHOR_EMAIL` | Commit author **email** for PR creation (`git config user.email` in the repo only; required with **`QSWARM_GIT_AUTHOR_NAME`**) |
 | `QSWARM_WORKSPACE_ROOT` | Root for materialized session repos (default **`/tmp/qswarm`**; clones live under **`sessions/<session_id>/repo`**) |
+| `QSWARM_WORKSPACE_CACHE_TTL_MINUTES` | Idle TTL for **`workspace_cache_entries`** metadata (default **60**); expired rows are marked before **`create-pr`**; missing managed workspaces are **re-cloned** and the **current patch version** is re-applied automatically |
 | `QSWARM_GIT_CLONE_TIMEOUT_SECONDS` | `git clone` timeout for session workspace materialization (default **600**) |
 | `QSWARM_GIT_FETCH_TIMEOUT_SECONDS` | `git fetch` / checkout timeouts (default **120**) |
 | `QSWARM_BOOTSTRAP_TIMEOUT_SECONDS` | `npm ci` / `npm install` timeout after clone or when deps missing locally (default **600**) |

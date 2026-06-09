@@ -1,5 +1,7 @@
 """Application-wide constants and enum-like string groups."""
 
+from __future__ import annotations
+
 from enum import StrEnum
 
 

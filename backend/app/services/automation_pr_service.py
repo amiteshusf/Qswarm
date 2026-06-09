@@ -23,6 +23,7 @@ from app.db.models.repository_branch_policy import RepositoryBranchPolicy
 from app.db.models.repository_connection import RepositoryConnection
 from app.services import audit_service, repository_connection_service
 from app.services.automation_session_service import sync_session_status_from_job
+from app.services.workspace_cache_service import ensure_pr_workspace_ready
 from app.services.pr_template_render_service import (
     build_pr_template_context,
     validate_and_render_pr_template,
@@ -215,10 +216,17 @@ def create_pr_for_automation_session(
             )
         gh = GitHubSourceControlAdapter(get_settings())
         token = resolve_github_token(conn, get_settings())
+        repo_ready = ensure_pr_workspace_ready(
+            db,
+            session=session,
+            job=job,
+            repository_connection_id=repository_connection_id,
+            settings=get_settings(),
+        )
         meta = gh.run_session_pr_pipeline(
             db,
             job,
-            repo_path=str(job.repo_path or session.repo_path or ""),
+            repo_path=repo_ready,
             source_branch=src,
             target_branch=tgt,
             owner=conn.owner_or_org,

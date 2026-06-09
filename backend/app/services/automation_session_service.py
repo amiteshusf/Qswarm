@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from pathlib import Path
@@ -70,6 +71,7 @@ from app.services.repo_workspace_service import (
     prepare_automation_session_workspace,
     resolve_workspace_bootstrap_profile,
 )
+from app.services.workspace_cache_service import record_workspace_cache_after_hosted_materialize
 
 
 logger = logging.getLogger(__name__)
@@ -422,6 +424,46 @@ def record_plan_version(
     return row
 
 
+def _hydrate_patch_json_for_version_storage(job: AutomationJob, summary_patch: dict[str, Any]) -> dict[str, Any]:
+    """
+    Persist full ``generated_files[].content`` alongside summarized metadata.
+
+    ``job.generated_patch_json`` uses :func:`summarize_patch_for_persistence` (no file bodies).
+    Hosted create-pr rebuild reads ``AutomationPatchVersion.patch_json`` as source of truth, so we
+    snapshot post-apply workspace contents for each listed path.
+    """
+    merged = copy.deepcopy(summary_patch)
+    rp = (job.repo_path or "").strip()
+    if not rp:
+        return merged
+    try:
+        root = Path(rp).expanduser().resolve()
+    except OSError:
+        return merged
+    hydrated: list[dict[str, Any]] = []
+    for it in merged.get("generated_files") or []:
+        if not isinstance(it, dict):
+            continue
+        rel = str(it.get("path", "")).strip().replace("\\", "/")
+        if not rel or ".." in rel or rel.startswith("/"):
+            continue
+        action = str(it.get("action") or "modify").strip()
+        try:
+            dest = (root / rel).resolve()
+            dest.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not dest.is_file():
+            continue
+        try:
+            txt = dest.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        hydrated.append({"path": rel, "action": action, "content": txt})
+    merged["generated_files"] = hydrated
+    return merged
+
+
 def record_patch_version(
     db: Session,
     *,
@@ -639,6 +681,14 @@ def start_automation_session(
             repository_connection_id=repository_connection_id,
             settings=get_settings(),
         )
+        record_workspace_cache_after_hosted_materialize(
+            db,
+            session=session,
+            job=job,
+            prep=prep,
+            repository_connection_id=repository_connection_id,
+            settings=get_settings(),
+        )
         profile = resolve_workspace_bootstrap_profile(session, job, prep=prep, settings=get_settings())
         _run_repo_bootstrap_for_session(
             db,
@@ -755,7 +805,7 @@ def start_automation_session(
             db,
             session=session,
             revision_round=rnd,
-            patch_json=dict(job.generated_patch_json),
+            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
             created_by=aid,
         )
     if isinstance(job.execution_result_json, dict) and job.execution_result_json:
@@ -897,7 +947,7 @@ def request_session_revision(
             db,
             session=session,
             revision_round=rnd,
-            patch_json=dict(job.generated_patch_json),
+            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
             created_by=actor_id.strip()[:256],
         )
     if isinstance(job.execution_result_json, dict) and job.execution_result_json:

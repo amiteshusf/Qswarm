@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
+from sqlalchemy import delete, select
 
 from app.core.config import get_settings
 from app.core.constants import AutomationJobStatus, AutomationSessionStatus, SourceControlProviderName
+from app.db.models.automation_job import AutomationJob
+from app.db.models.automation_patch_version import AutomationPatchVersion
+from app.db.models.automation_session import AutomationSession
 from app.db.models.code_review_request import CodeReviewRequest
+from app.services.repo_workspace_service import WorkspacePreparationResult
 from app.source_control.errors import SourceControlAuthError, UnsupportedSourceControlProviderError
 from app.source_control.github_provider_adapter import GitHubSourceControlAdapter
 from app.source_control.registry import resolve_source_control_adapter
 from sqlalchemy import select
 
-from test_automation_jobs import _playwright_fixture_repo, _stub_execution_run_factory
+from test_automation_jobs import (
+    _ensure_git_repo_for_session_pr,
+    _playwright_fixture_repo,
+    _stub_execution_run_factory,
+)
 from test_automation_sessions import _patch_playwright_run_for_job_and_review
 
 
@@ -124,6 +134,7 @@ def test_github_validate_config_missing_token(monkeypatch, db_session):
 
 def _session_at_approved_for_pr(client, tmp_path, monkeypatch, **session_extra):
     _playwright_fixture_repo(tmp_path)
+    _ensure_git_repo_for_session_pr(tmp_path)
     _patch_playwright_run_for_job_and_review(monkeypatch, _stub_execution_run_factory())
     body = {
         "approved_case_id": "SESS-PR-1",
@@ -207,6 +218,95 @@ def test_create_pr_success_and_list_requests(client, tmp_path, monkeypatch, db_s
 
     rows = list(db_session.scalars(select(CodeReviewRequest).where(CodeReviewRequest.automation_session_id == sid)).all())
     assert len(rows) >= 1
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    get_settings.cache_clear()
+
+
+def test_create_pr_returns_400_when_no_current_patch(client, tmp_path, monkeypatch, db_session):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_fake_token_for_validate")
+    get_settings.cache_clear()
+    sid = _session_at_approved_for_pr(client, tmp_path, monkeypatch)
+    db_session.execute(delete(AutomationPatchVersion).where(AutomationPatchVersion.automation_session_id == sid))
+    db_session.commit()
+
+    conn = client.post("/repo-connections", json=_repo_conn_body(display_name="NoPatchConn"))
+    assert conn.status_code == 201
+    cid = conn.json()["id"]
+    pr = client.post(
+        f"/automation/sessions/{sid}/create-pr",
+        json={"actor_id": "qa", "repository_connection_id": cid},
+    )
+    assert pr.status_code == 400, pr.text
+    det = pr.json().get("detail") or {}
+    assert det.get("code") == "pr_no_current_patch"
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    get_settings.cache_clear()
+
+
+def test_create_pr_rebuilds_workspace_when_repo_path_missing(client, tmp_path, monkeypatch, db_session):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_fake_token_for_validate")
+    get_settings.cache_clear()
+    sid = _session_at_approved_for_pr(client, tmp_path, monkeypatch)
+
+    sess = db_session.get(AutomationSession, sid)
+    assert sess is not None
+    job = db_session.get(AutomationJob, sess.automation_job_id)
+    assert job is not None
+    fake_root = tmp_path / "rebuilt_pr" / str(sid) / "repo"
+    prepare_calls: list[int] = []
+
+    def fake_prepare(db, *, session, job, repository_connection_id=None, settings=None):
+        prepare_calls.append(1)
+        fake_root.mkdir(parents=True, exist_ok=True)
+        _playwright_fixture_repo(fake_root)
+        _ensure_git_repo_for_session_pr(fake_root)
+        resolved = str(fake_root.resolve())
+        job.repo_path = resolved
+        session.repo_path = resolved
+        db.flush()
+        return WorkspacePreparationResult(
+            mode="cloned_workspace",
+            workspace_path=resolved,
+            clone_url_used="https://github.com/o/r.git",
+            provider="github",
+            target_branch="main",
+            source_reference=None,
+            notes="test",
+        )
+
+    monkeypatch.setattr(
+        "app.services.workspace_cache_service.prepare_automation_session_workspace",
+        fake_prepare,
+    )
+    job.repo_path = "/this/path/does/not/exist/repo"
+    sess.repo_path = job.repo_path
+    db_session.commit()
+
+    conn = client.post("/repo-connections", json=_repo_conn_body(display_name="RebuildConn"))
+    cid = conn.json()["id"]
+
+    seen_repo_path: dict[str, str] = {}
+
+    def _fake_pipeline(self, db, job, **kwargs):
+        seen_repo_path["path"] = kwargs.get("repo_path") or ""
+        return {
+            "pr_number": 88,
+            "pr_url": "https://github.com/acme/webapp/pull/88",
+            "commit_sha": "cafebabe",
+            "source_branch": kwargs.get("source_branch"),
+            "target_branch": kwargs.get("target_branch"),
+            "refresh_notes": {},
+        }
+
+    monkeypatch.setattr(GitHubSourceControlAdapter, "run_session_pr_pipeline", _fake_pipeline)
+    pr = client.post(
+        f"/automation/sessions/{sid}/create-pr",
+        json={"actor_id": "qa", "repository_connection_id": cid},
+    )
+    assert pr.status_code == 200, pr.text
+    assert len(prepare_calls) == 1
+    assert Path(seen_repo_path["path"]).resolve() == fake_root.resolve()
+    assert (fake_root / "tests" / "smoke.spec.ts").read_text().find("QSwarm stub generation") >= 0
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     get_settings.cache_clear()
 
