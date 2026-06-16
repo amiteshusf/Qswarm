@@ -36,6 +36,7 @@ from app.schemas.ui_v1_models import (
 from app.services import automation_pr_service, automation_session_service
 from app.services.ui_v1_dashboard import build_dashboard_response, format_dashboard_json_for_ui
 from app.services.ui_v1_mapper import dict_keys_to_camel
+from app.services.ui_v1_repo_connections import format_repo_connection_json_for_ui
 
 router = APIRouter(prefix="/api/v1", tags=["ui-v1"])
 
@@ -79,26 +80,30 @@ def ui_settings():
 
 @router.get("/repo-connections")
 def ui_list_repo_connections(db: DbSession):
+    """
+    List connections for Qswarm-UI: returns a **JSON array** of ``repoConnectionSchema`` objects
+    (see ``app.services.ui_v1_repo_connections``), not a wrapper object.
+    """
     res = rc_routes.list_repo_connections(db)
-    return {"repoConnections": [_camel_json(x.model_dump()) for x in res.items]}
+    return [format_repo_connection_json_for_ui(x) for x in res.items]
 
 
 @router.get("/repo-connections/{connection_id}", responses={404: {"model": ErrorResponse}})
 def ui_get_repo_connection(connection_id: uuid.UUID, db: DbSession):
     row = rc_routes.get_repo_connection(connection_id, db)
-    return _camel_json(row.model_dump())
+    return format_repo_connection_json_for_ui(row)
 
 
 @router.post("/repo-connections", status_code=status.HTTP_201_CREATED, responses={400: {"model": ErrorResponse}})
 def ui_create_repo_connection(body: UiRepositoryConnectionCreate, db: DbSession):
     row = rc_routes.create_repo_connection(body.to_legacy(), db)
-    return _camel_json(row.model_dump())
+    return format_repo_connection_json_for_ui(row)
 
 
 @router.patch("/repo-connections/{connection_id}", responses={404: {"model": ErrorResponse}})
 def ui_patch_repo_connection(connection_id: uuid.UUID, body: UiRepositoryConnectionPatch, db: DbSession):
     row = rc_routes.patch_repo_connection(connection_id, body.to_legacy(), db)
-    return _camel_json(row.model_dump())
+    return format_repo_connection_json_for_ui(row)
 
 
 # --- branch policies (by policy id; create requires repositoryConnectionId) ---

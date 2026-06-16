@@ -90,23 +90,26 @@ def test_ui_v1_repo_connections_crud(ui_client, db_session):
         json={
             "provider": "github",
             "displayName": "UI BFF",
-            "ownerOrOrg": "acme",
-            "repoName": "bff",
+            "owner": "acme",
+            "repo": "bff",
+            "defaultBranch": "main",
+            "authRef": "test-token",
             "createdBy": "tester",
         },
     )
     assert r.status_code == 201, r.text
     cid = r.json()["id"]
     assert r.json()["displayName"] == "UI BFF"
+    assert r.json()["repo"] == "bff"
 
     lst = ui_client.get("/api/v1/repo-connections")
     assert lst.status_code == 200
-    assert "repoConnections" in lst.json()
-    assert any(x["id"] == cid for x in lst.json()["repoConnections"])
+    assert isinstance(lst.json(), list)
+    assert any(x["id"] == cid for x in lst.json())
 
     one = ui_client.get(f"/api/v1/repo-connections/{cid}")
     assert one.status_code == 200
-    assert one.json()["repoName"] == "bff"
+    assert one.json()["repo"] == "bff"
 
     pu = ui_client.patch(f"/api/v1/repo-connections/{cid}", json={"displayName": "Renamed BFF"})
     assert pu.status_code == 200
@@ -119,8 +122,10 @@ def test_ui_v1_branch_policies_by_policy_id(ui_client, db_session):
         json={
             "provider": "github",
             "displayName": "PolConn",
-            "ownerOrOrg": "o",
-            "repoName": "r",
+            "owner": "o",
+            "repo": "r",
+            "defaultBranch": "main",
+            "authRef": "tok",
             "createdBy": "u",
         },
     )

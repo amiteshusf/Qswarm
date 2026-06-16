@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.schemas.automation_session import (
     AutomationSessionCreateRequest,
@@ -86,39 +86,93 @@ class UiAutomationSessionCreatePr(BaseModel):
 
 
 class UiRepositoryConnectionCreate(BaseModel):
+    """
+    Request body aligned with Qswarm-UI ``repoConnectionInputSchema`` (plus optional ``createdBy``).
+
+    Accepts UI field names ``owner`` / ``repo`` / ``authRef`` or legacy BFF aliases
+    ``ownerOrOrg`` / ``repoName`` / ``authReference`` / ``credentialReference``.
+    """
+
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
     provider: str = Field(..., max_length=32)
-    display_name: str = Field(..., alias="displayName", min_length=1, max_length=256)
-    owner_or_org: str = Field(..., alias="ownerOrOrg", min_length=1, max_length=256)
-    repo_name: str = Field(..., alias="repoName", min_length=1, max_length=256)
-    created_by: str = Field(..., alias="createdBy", min_length=1, max_length=256)
-    project_or_workspace: str | None = Field(default=None, alias="projectOrWorkspace", max_length=256)
+    owner: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        validation_alias=AliasChoices("owner", "ownerOrOrg"),
+    )
+    repo: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        validation_alias=AliasChoices("repo", "repoName"),
+    )
+    display_name: str | None = Field(default=None, alias="displayName", max_length=256)
     clone_url: str | None = Field(default=None, alias="cloneUrl", max_length=1024)
-    default_branch: str = Field(default="main", alias="defaultBranch", max_length=256)
-    auth_type: str = Field(default="github_pat_env", alias="authType", max_length=64)
-    credential_reference: str | None = Field(default=None, alias="credentialReference", max_length=256)
-    is_active: bool = Field(default=True, alias="isActive")
+    default_branch: str = Field(default="main", alias="defaultBranch", min_length=1, max_length=256)
+    credential_reference: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        validation_alias=AliasChoices("authRef", "authReference", "credentialReference"),
+    )
+    created_by: str = Field(default="qswarm-web", alias="createdBy", min_length=1, max_length=256)
 
     def to_legacy(self) -> RepositoryConnectionCreateRequest:
-        return RepositoryConnectionCreateRequest.model_validate(self.model_dump(by_alias=False))
+        display = (self.display_name or "").strip() or f"{self.owner}/{self.repo}"
+        clone = (self.clone_url or "").strip() or None
+        prov = self.provider.strip().lower()
+        if prov == "other":
+            # DB enum has no generic "other"; GitHub is the implemented adapter today.
+            prov = "github"
+        return RepositoryConnectionCreateRequest(
+            provider=prov,
+            display_name=display,
+            owner_or_org=self.owner,
+            repo_name=self.repo,
+            created_by=(self.created_by or "").strip() or "qswarm-web",
+            project_or_workspace=None,
+            clone_url=clone,
+            default_branch=self.default_branch,
+            auth_type="github_pat_env",
+            credential_reference=self.credential_reference,
+            is_active=True,
+        )
 
 
 class UiRepositoryConnectionPatch(BaseModel):
+    """PATCH body: Qswarm-UI ``repoConnectionInputSchema`` fields (partial updates mapped to legacy patch)."""
+
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
+    owner: str | None = Field(default=None, validation_alias=AliasChoices("owner", "ownerOrOrg"), max_length=256)
+    repo: str | None = Field(default=None, validation_alias=AliasChoices("repo", "repoName"), max_length=256)
     display_name: str | None = Field(default=None, alias="displayName", max_length=256)
-    owner_or_org: str | None = Field(default=None, alias="ownerOrOrg", max_length=256)
-    repo_name: str | None = Field(default=None, alias="repoName", max_length=256)
-    project_or_workspace: str | None = Field(default=None, alias="projectOrWorkspace")
     clone_url: str | None = Field(default=None, alias="cloneUrl")
     default_branch: str | None = Field(default=None, alias="defaultBranch", max_length=256)
-    auth_type: str | None = Field(default=None, alias="authType", max_length=64)
-    credential_reference: str | None = Field(default=None, alias="credentialReference")
-    is_active: bool | None = Field(default=None, alias="isActive")
+    credential_reference: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("authRef", "authReference", "credentialReference"),
+        max_length=256,
+    )
 
     def to_legacy(self) -> RepositoryConnectionPatchRequest:
-        return RepositoryConnectionPatchRequest.model_validate(self.model_dump(by_alias=False, exclude_none=True))
+        data: dict[str, Any] = {}
+        if self.owner is not None:
+            data["owner_or_org"] = self.owner
+        if self.repo is not None:
+            data["repo_name"] = self.repo
+        if self.display_name is not None:
+            data["display_name"] = self.display_name.strip()[:256] if self.display_name.strip() else None
+        if self.clone_url is not None:
+            c = self.clone_url.strip()
+            data["clone_url"] = c if c else None
+        if self.default_branch is not None:
+            data["default_branch"] = self.default_branch.strip()[:256] if self.default_branch.strip() else None
+        if self.credential_reference is not None:
+            data["credential_reference"] = self.credential_reference.strip()[:256] or None
+        return RepositoryConnectionPatchRequest.model_validate(data)
 
 
 class UiBranchPolicyCreate(BaseModel):
