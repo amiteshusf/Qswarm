@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local", alias="APP_ENV")
     app_debug: bool = Field(default=False, alias="APP_DEBUG")
 
+    cors_extra_origins: str = Field(
+        default="",
+        alias="CORS_EXTRA_ORIGINS",
+        description="Comma-separated extra browser origins allowed by CORS (in addition to qswarm-ui.vercel.app and localhost:5173).",
+    )
+
     database_url: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/qswarm",
         alias="DATABASE_URL",

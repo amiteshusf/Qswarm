@@ -22,7 +22,7 @@ from app.services import repository_connection_service
 router = APIRouter(prefix="/repo-connections", tags=["repository-connections"])
 
 
-def _conn_to_response(row) -> RepositoryConnectionResponse:
+def repository_connection_to_response(row) -> RepositoryConnectionResponse:
     return RepositoryConnectionResponse(
         id=str(row.id),
         provider=row.provider,
@@ -41,7 +41,7 @@ def _conn_to_response(row) -> RepositoryConnectionResponse:
     )
 
 
-def _policy_to_response(p) -> BranchPolicyResponse:
+def branch_policy_to_response(p) -> BranchPolicyResponse:
     return BranchPolicyResponse(
         id=str(p.id),
         repository_connection_id=str(p.repository_connection_id),
@@ -84,13 +84,13 @@ def create_repo_connection(body: RepositoryConnectionCreateRequest, db: DbSessio
         raise
     db.commit()
     db.refresh(row)
-    return _conn_to_response(row)
+    return repository_connection_to_response(row)
 
 
 @router.get("", response_model=RepositoryConnectionsListResponse)
 def list_repo_connections(db: DbSession):
     rows = repository_connection_service.list_repository_connections(db)
-    return RepositoryConnectionsListResponse(items=[_conn_to_response(r) for r in rows])
+    return RepositoryConnectionsListResponse(items=[repository_connection_to_response(r) for r in rows])
 
 
 @router.get("/{connection_id}", response_model=RepositoryConnectionResponse, responses={404: {"model": ErrorResponse}})
@@ -101,7 +101,7 @@ def get_repo_connection(connection_id: uuid.UUID, db: DbSession):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ErrorDetail(code="not_found", message="Repository connection not found").model_dump(),
         )
-    return _conn_to_response(row)
+    return repository_connection_to_response(row)
 
 
 @router.patch("/{connection_id}", response_model=RepositoryConnectionResponse, responses={404: {"model": ErrorResponse}})
@@ -116,7 +116,7 @@ def patch_repo_connection(connection_id: uuid.UUID, body: RepositoryConnectionPa
     repository_connection_service.update_repository_connection(db, row, patch=patch)
     db.commit()
     db.refresh(row)
-    return _conn_to_response(row)
+    return repository_connection_to_response(row)
 
 
 @router.post(
@@ -148,7 +148,7 @@ def create_branch_policy(connection_id: uuid.UUID, body: BranchPolicyCreateReque
         raise
     db.commit()
     db.refresh(p)
-    return _policy_to_response(p)
+    return branch_policy_to_response(p)
 
 
 @router.get(
@@ -163,7 +163,7 @@ def get_branch_policy(connection_id: uuid.UUID, db: DbSession):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ErrorDetail(code="not_found", message="Branch policy not found").model_dump(),
         )
-    return _policy_to_response(p)
+    return branch_policy_to_response(p)
 
 
 @router.patch(
@@ -199,4 +199,4 @@ def patch_branch_policy(connection_id: uuid.UUID, body: BranchPolicyPatchRequest
         p.default_labels_json = data["default_labels_json"]
     db.commit()
     db.refresh(p)
-    return _policy_to_response(p)
+    return branch_policy_to_response(p)
