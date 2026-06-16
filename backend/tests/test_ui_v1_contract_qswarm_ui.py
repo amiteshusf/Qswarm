@@ -1,9 +1,8 @@
 """
-Contract tests: ``/api/v1`` JSON must match [Qswarm-UI](https://github.com/amiteshusf/Qswarm-UI)
-``src/api/schemas.ts`` expectations (Zod). Run in CI on every change — failures mean the
-BFF drifted from the stable product contract.
+Contract tests for **BFF** ``/api/v1`` endpoints (dashboard-style and session aggregates).
 
-Marker: ``pytest -m contract`` (see ``pyproject.toml``).
+Repo connections and settings are **backend-first**; see ``tests/test_ui_v1_repo_connections.py``
+and settings tests. Classification: ``docs/UI_V1_API_CLASSIFICATION.md``.
 """
 
 from __future__ import annotations
@@ -45,12 +44,9 @@ def test_contract_settings_schema(ui_client):
     r = ui_client.get("/api/v1/settings")
     assert r.status_code == 200, r.text
     j = r.json()
-    assert set(j.keys()) >= {"engine", "infrastructure", "source"}
-    assert set(j["engine"].keys()) >= {"defaultEngine", "maxRounds"}
-    assert isinstance(j["engine"]["defaultEngine"], str)
-    assert isinstance(j["engine"]["maxRounds"], int)
-    assert isinstance(j["infrastructure"]["provider"], str)
-    assert isinstance(j["source"]["system"], str)
+    assert "applicationName" in j
+    assert "jira" in j and isinstance(j["jira"], dict)
+    assert "codingProvider" in j
 
 
 def test_contract_branch_policies_array_and_shape(ui_client, db_session):

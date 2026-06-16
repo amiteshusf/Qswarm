@@ -38,7 +38,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
 markers = [
-    "contract: BFF /api/v1 JSON must match Qswarm-UI Zod contracts (see tests/test_ui_v1_contract_qswarm_ui.py)",
+    "contract: BFF /api/v1 responses that are still view-model shaped (dashboard, sessions, branch policies); see docs/UI_V1_API_CLASSIFICATION.md",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

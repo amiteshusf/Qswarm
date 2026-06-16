@@ -1,4 +1,10 @@
-"""UI-facing BFF routes under ``/api/v1`` (camelCase JSON, product-oriented shapes)."""
+"""UI-facing routes under ``/api/v1``.
+
+**Backend-first:** CRUD that mirrors legacy services uses ``dict_keys_to_camel(model_dump())``
+only — no per-endpoint compatibility mappers (see ``docs/UI_V1_API_CLASSIFICATION.md``).
+
+**BFF:** Dashboard and session/branch flows that aggregate or reshape data for the UI.
+"""
 
 from __future__ import annotations
 
@@ -37,9 +43,7 @@ from app.services import automation_session_service
 from app.services.ui_v1_branch_policies import format_branch_policy_json_for_ui
 from app.services.ui_v1_dashboard import build_dashboard_response, format_dashboard_json_for_ui, map_backend_to_ui_dashboard_status
 from app.services.ui_v1_mapper import dict_keys_to_camel
-from app.services.ui_v1_repo_connections import format_repo_connection_json_for_ui
 from app.services.ui_v1_sessions import build_session_detail_json_for_ui, format_session_summary_for_ui
-from app.services.ui_v1_settings import format_settings_json_for_ui
 
 router = APIRouter(prefix="/api/v1", tags=["ui-v1"])
 
@@ -62,8 +66,21 @@ def ui_dashboard(db: DbSession):
 
 @router.get("/settings")
 def ui_settings():
-    """Qswarm-UI ``settingsSchema`` (stable product contract; not full server config)."""
-    return format_settings_json_for_ui(get_settings())
+    """Backend config slice for the UI (camelCase); same facts as server settings, no synthetic nested product schema."""
+    s = get_settings()
+    return _camel_json(
+        {
+            "application_name": s.app_name,
+            "environment": s.app_env,
+            "debug": s.app_debug,
+            "jira": {"use_stub": s.jira_use_stub, "configured": s.jira_configured},
+            "coding_provider": s.coding_provider,
+            "workspace_root": s.qswarm_workspace_root,
+            "claude_code_enabled": s.qswarm_claude_code_enabled,
+            "copilot_agent_enabled": s.qswarm_copilot_agent_enabled,
+            "notes": "Read-only slice for the UI; secrets are never returned.",
+        }
+    )
 
 
 # --- repo connections ---
@@ -71,30 +88,27 @@ def ui_settings():
 
 @router.get("/repo-connections")
 def ui_list_repo_connections(db: DbSession):
-    """
-    List connections for Qswarm-UI: returns a **JSON array** of ``repoConnectionSchema`` objects
-    (see ``app.services.ui_v1_repo_connections``), not a wrapper object.
-    """
+    """Same contract as ``GET /repo-connections`` (``items`` list), camelCase keys for JSON."""
     res = rc_routes.list_repo_connections(db)
-    return [format_repo_connection_json_for_ui(x) for x in res.items]
+    return _camel_json(res.model_dump())
 
 
 @router.get("/repo-connections/{connection_id}", responses={404: {"model": ErrorResponse}})
 def ui_get_repo_connection(connection_id: uuid.UUID, db: DbSession):
     row = rc_routes.get_repo_connection(connection_id, db)
-    return format_repo_connection_json_for_ui(row)
+    return _camel_json(row.model_dump())
 
 
 @router.post("/repo-connections", status_code=status.HTTP_201_CREATED, responses={400: {"model": ErrorResponse}})
 def ui_create_repo_connection(body: UiRepositoryConnectionCreate, db: DbSession):
     row = rc_routes.create_repo_connection(body.to_legacy(), db)
-    return format_repo_connection_json_for_ui(row)
+    return _camel_json(row.model_dump())
 
 
 @router.patch("/repo-connections/{connection_id}", responses={404: {"model": ErrorResponse}})
 def ui_patch_repo_connection(connection_id: uuid.UUID, body: UiRepositoryConnectionPatch, db: DbSession):
     row = rc_routes.patch_repo_connection(connection_id, body.to_legacy(), db)
-    return format_repo_connection_json_for_ui(row)
+    return _camel_json(row.model_dump())
 
 
 # --- branch policies (by policy id; create requires repositoryConnectionId) ---

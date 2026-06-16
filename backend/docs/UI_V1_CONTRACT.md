@@ -1,33 +1,33 @@
-# `/api/v1` — stable UI BFF contract (Qswarm Web)
+# `/api/v1` — two-tier contract model
 
-The **QSwarm Web** frontend ([Qswarm-UI](https://github.com/amiteshusf/Qswarm-UI)) treats **`/api/v1`** as the only product-facing HTTP contract. Shapes are defined in the UI repo as Zod schemas (`src/api/schemas.ts`); this backend mirrors them in BFF normalizers under `app/services/ui_v1_*.py`.
+QSwarm Web should prefer **one integration model** with two tiers:
+
+1. **Backend-first (default)** — `/api/v1` mirrors the same Pydantic payloads as legacy REST routes, with **only** recursive `camelCase` key conversion (`app/services/ui_v1_mapper.py`) where JSON is returned. No parallel “UI-only” field renames (`owner` vs `ownerOrOrg`, etc.).
+
+2. **Intentional BFF** — Endpoints that **aggregate** or **reshape** multiple sources for a screen keep explicit normalizers (`ui_v1_dashboard.py`, `ui_v1_sessions.py`, `ui_v1_branch_policies.py` today).
+
+Full classification: **`docs/UI_V1_API_CLASSIFICATION.md`**.
 
 ## Rules
 
-1. **Legacy routes** (`/automation/sessions`, `/repo-connections`, …) remain for scripts and internal use; they may use snake_case and different response shapes.
-2. **`/api/v1`** responses must match the UI Zod contract: correct **wrapper** (many list endpoints return a **top-level JSON array**, not `{ items: … }` or `{ sessions: … }`), **camelCase** field names, and **enum** values normalized for the UI.
-3. **Internal models may change** behind explicit mappers; do not return raw SQLAlchemy rows or internal-only dicts from `/api/v1`.
-4. **Breaking changes** to this contract should be intentional and versioned (e.g. a future `/api/v2`), not accidental drift.
+- **Legacy routes** (`/repo-connections`, `/automation/sessions`, …) stay the canonical **OpenAPI/snake** source; `/api/v1` may expose the same shapes with camelCase keys for browser clients.
+- **Do not** add per-CRUD mapper modules unless the endpoint merges multiple backends or requires a stable UI enum not present on the server model.
+- **Breaking changes** to BFF view-models should be versioned (e.g. `/api/v2`); backend-first payloads should track `app/schemas` + Alembic.
 
 ## Contract enforcement (CI)
 
-- **`tests/test_ui_v1_contract_qswarm_ui.py`** — marked `@pytest.mark.contract`; asserts keys/types/enums for settings, branch policies, sessions against the Qswarm-UI expectations.
-- Run all tests: `pytest tests/` (default in CI).
-- Run only contract tests: `pytest -m contract`.
+- **`@pytest.mark.contract`** — BFF / view-model endpoints (dashboard, sessions, branch policies) where Zod-shaped or multi-source responses remain.
+- **Repo connections & settings** — assert parity with `RepositoryConnectionResponse` / settings dict (see `tests/test_ui_v1_repo_connections.py` and settings tests).
 
-If a contract test fails, compare the failing payload to [Qswarm-UI `schemas.ts`](https://github.com/amiteshusf/Qswarm-UI/blob/main/src/api/schemas.ts) and update the appropriate `app/services/ui_v1_*.py` mapper (not the legacy route).
+## BFF modules (current)
 
-## Endpoint → normalizer map (summary)
+| Area | Module | Role |
+|------|--------|------|
+| Dashboard | `ui_v1_dashboard.py` | Counts, recent sessions, mixed JSON for UI enums |
+| Branch policies | `ui_v1_branch_policies.py` | Policy list/detail shape (until aligned to `BranchPolicyResponse` + generic camel) |
+| Sessions | `ui_v1_sessions.py` | List filter + session detail aggregate |
+| Generic camelCase | `ui_v1_mapper.py` | `dict_keys_to_camel` for backend-first routes |
 
-| Area | Normalizer module |
-|------|-------------------|
-| Dashboard | `ui_v1_dashboard.py` |
-| Repo connections | `ui_v1_repo_connections.py` |
-| Branch policies | `ui_v1_branch_policies.py` |
-| Sessions (list/detail/mutations) | `ui_v1_sessions.py` |
-| Settings | `ui_v1_settings.py` |
-| Generic camelCase (non-dashboard) | `ui_v1_mapper.py` |
+## Frontend direction
 
-## List response pattern (Qswarm-UI client)
-
-The UI client parses **`GET /repo-connections`**, **`GET /branch-policies`**, and **`GET /sessions`** as **`z.array(...)`** — the HTTP body must be a **JSON array** `[...]`, not an object wrapper.
+[Qswarm-UI](https://github.com/amiteshusf/Qswarm-UI) should align Zod/clients to **backend models** for CRUD (e.g. `items` on list repo connections, `ownerOrOrg`, `credentialReference`). Prefer future **OpenAPI-generated** types from this backend over hand-maintained duplicate schemas.
