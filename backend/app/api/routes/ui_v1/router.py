@@ -34,6 +34,7 @@ from app.schemas.ui_v1_models import (
     UiRepositoryConnectionPatch,
 )
 from app.services import automation_pr_service, automation_session_service
+from app.services.ui_v1_dashboard import build_dashboard_response, format_dashboard_json_for_ui
 from app.services.ui_v1_mapper import dict_keys_to_camel
 
 router = APIRouter(prefix="/api/v1", tags=["ui-v1"])
@@ -48,38 +49,8 @@ def _camel_json(data: Any) -> Any:
 
 @router.get("/dashboard")
 def ui_dashboard(db: DbSession):
-    settings = get_settings()
-    sessions_cap = 400
-    rows = list(
-        db.scalars(
-            select(AutomationSession)
-            .options(joinedload(AutomationSession.automation_job))
-            .order_by(AutomationSession.updated_at.desc())
-            .limit(sessions_cap)
-        ).all()
-    )
-    status_counts: dict[str, int] = {}
-    recent: list[dict[str, Any]] = []
-    for s in rows:
-        summ = automation_session_service.session_to_summary(db, s)
-        st = str(summ.get("status") or "")
-        status_counts[st] = status_counts.get(st, 0) + 1
-    for s in rows[:12]:
-        recent.append(_camel_json(automation_session_service.session_to_summary(db, s)))
-
-    n_conn = int(db.scalar(select(func.count()).select_from(RepositoryConnection)) or 0)
-    n_pol = int(db.scalar(select(func.count()).select_from(RepositoryBranchPolicy)) or 0)
-
-    return _camel_json(
-        {
-            "session_status_counts": status_counts,
-            "recent_sessions": recent,
-            "repository_connection_count": n_conn,
-            "branch_policy_count": n_pol,
-            "environment": settings.app_env,
-            "application_name": settings.app_name,
-        }
-    )
+    """Aggregated dashboard for QSwarm Web; see ``app.services.ui_v1_dashboard`` for Zod-aligned normalization."""
+    return format_dashboard_json_for_ui(build_dashboard_response(db, get_settings()))
 
 
 # --- settings ---

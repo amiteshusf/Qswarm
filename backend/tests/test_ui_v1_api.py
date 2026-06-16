@@ -36,8 +36,39 @@ def test_ui_v1_dashboard_shape(ui_client):
     r = ui_client.get("/api/v1/dashboard")
     assert r.status_code == 200, r.text
     j = r.json()
-    assert "sessionStatusCounts" in j
+    assert "sessionCounts" in j
+    sc = j["sessionCounts"]
+    assert isinstance(sc, dict)
+    for k in (
+        "draft",
+        "queued",
+        "running",
+        "awaiting_review",
+        "revising",
+        "succeeded",
+        "failed",
+        "cancelled",
+    ):
+        assert k in sc, sc.keys()
+        assert isinstance(sc[k], int)
     assert "recentSessions" in j
+    assert isinstance(j["recentSessions"], list)
+    allowed = {
+        "draft",
+        "queued",
+        "running",
+        "awaiting_review",
+        "revising",
+        "succeeded",
+        "failed",
+        "cancelled",
+    }
+    for row in j["recentSessions"]:
+        assert isinstance(row.get("id"), str)
+        assert row["status"] in allowed
+        assert isinstance(row.get("engine"), str)
+        assert isinstance(row.get("repoConnectionId"), str)
+        assert isinstance(row.get("sourceRef"), str)
     assert "repositoryConnectionCount" in j
     assert "branchPolicyCount" in j
     assert "environment" in j
