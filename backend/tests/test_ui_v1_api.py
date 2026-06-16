@@ -79,9 +79,8 @@ def test_ui_v1_settings_shape(ui_client):
     r = ui_client.get("/api/v1/settings")
     assert r.status_code == 200
     j = r.json()
-    assert j.get("applicationName")
-    assert "jira" in j
-    assert "useStub" in j["jira"]
+    assert "engine" in j and isinstance(j["engine"]["defaultEngine"], str)
+    assert "infrastructure" in j and "source" in j
 
 
 def test_ui_v1_repo_connections_crud(ui_client, db_session):
@@ -133,69 +132,105 @@ def test_ui_v1_branch_policies_by_policy_id(ui_client, db_session):
     pr = ui_client.post(
         "/api/v1/branch-policies",
         json={
+            "name": "PolConn policy",
             "repositoryConnectionId": conn_id,
-            "baseBranchDefault": "develop",
-            "branchNamingPattern": "feat/{session_id}",
+            "baseBranch": "develop",
+            "branchPattern": "feat/{session_id}",
+            "prTitleTemplate": "PR {session_id}",
+            "prBodyTemplate": "Hello",
         },
     )
     assert pr.status_code == 201, pr.text
     pid = pr.json()["id"]
-    assert pr.json()["baseBranchDefault"] == "develop"
+    assert pr.json()["baseBranch"] == "develop"
 
     lst = ui_client.get("/api/v1/branch-policies")
     assert lst.status_code == 200
-    assert any(p["id"] == pid for p in lst.json()["branchPolicies"])
+    assert isinstance(lst.json(), list)
+    assert any(p["id"] == pid for p in lst.json())
 
     g = ui_client.get(f"/api/v1/branch-policies/{pid}")
     assert g.status_code == 200
 
-    pa = ui_client.patch(f"/api/v1/branch-policies/{pid}", json={"allowSessionOverride": False})
+    pa = ui_client.patch(
+        f"/api/v1/branch-policies/{pid}",
+        json={
+            "baseBranch": "main",
+            "branchPattern": "feat/{session_id}",
+            "prTitleTemplate": "T",
+            "prBodyTemplate": "B",
+        },
+    )
     assert pa.status_code == 200
-    assert pa.json()["allowSessionOverride"] is False
+    assert pa.json()["baseBranch"] == "main"
 
 
 def test_ui_v1_sessions_list_and_detail(ui_client, tmp_path, monkeypatch):
     _playwright_fixture_repo(tmp_path)
     _ensure_git_repo_for_session_pr(tmp_path)
     _patch_playwright_run_for_job_and_review(monkeypatch, _stub_execution_run_factory())
+    rc = ui_client.post(
+        "/api/v1/repo-connections",
+        json={
+            "provider": "github",
+            "owner": "sess-org",
+            "repo": "sess-repo",
+            "defaultBranch": "main",
+            "authRef": "tok-sess",
+        },
+    )
+    assert rc.status_code == 201, rc.text
+    conn_id = rc.json()["id"]
     c = ui_client.post(
         "/api/v1/sessions",
         json={
-            "approvedCaseId": "UI-SESS-1",
+            "repositoryConnectionId": conn_id,
+            "engine": "stub",
+            "sourceRef": "UI-SESS-1",
             "createdBy": "runner",
-            "codingEngine": "stub",
             "repoPath": str(tmp_path.resolve()),
             "steps": ["open"],
         },
     )
     assert c.status_code == 201, c.text
     sid = c.json()["id"]
-    assert c.json()["approvedCaseId"] == "UI-SESS-1"
+    assert c.json()["sourceRef"] == "UI-SESS-1"
+    assert "rounds" in c.json()
 
     lst = ui_client.get("/api/v1/sessions")
     assert lst.status_code == 200
-    assert "sessions" in lst.json()
-    assert any(s["id"] == sid for s in lst.json()["sessions"])
+    assert isinstance(lst.json(), list)
+    assert any(s["id"] == sid for s in lst.json())
 
     det = ui_client.get(f"/api/v1/sessions/{sid}")
     assert det.status_code == 200
     body = det.json()
-    assert "summary" in body and "rounds" in body
-    assert "planVersions" in body and "patches" in body
+    assert "rounds" in body and "patches" in body
     assert "executions" in body and "reviews" in body
-    assert "codeReviewRequests" in body
 
 
 def test_ui_v1_session_start_uses_legacy_flow(ui_client, tmp_path, monkeypatch):
     _playwright_fixture_repo(tmp_path)
     _ensure_git_repo_for_session_pr(tmp_path)
     _patch_playwright_run_for_job_and_review(monkeypatch, _stub_execution_run_factory())
+    rc = ui_client.post(
+        "/api/v1/repo-connections",
+        json={
+            "provider": "github",
+            "owner": "st-org",
+            "repo": "st-repo",
+            "defaultBranch": "main",
+            "authRef": "tok-st",
+        },
+    )
+    conn_id = rc.json()["id"]
     c = ui_client.post(
         "/api/v1/sessions",
         json={
-            "approvedCaseId": "UI-START",
+            "repositoryConnectionId": conn_id,
+            "engine": "stub",
+            "sourceRef": "UI-START",
             "createdBy": "runner",
-            "codingEngine": "stub",
             "repoPath": str(tmp_path.resolve()),
             "steps": ["s"],
         },
@@ -203,7 +238,7 @@ def test_ui_v1_session_start_uses_legacy_flow(ui_client, tmp_path, monkeypatch):
     sid = c.json()["id"]
     st = ui_client.post(f"/api/v1/sessions/{sid}/start", json={"actorId": "runner"})
     assert st.status_code == 200, st.text
-    assert st.json().get("jobStatus") == "awaiting_automation_review"
+    assert st.json().get("status") == "awaiting_review"
 
 
 def test_legacy_automation_sessions_still_works(client, tmp_path, monkeypatch):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.automation_session import (
     AutomationSessionCreateRequest,
@@ -20,13 +20,29 @@ from app.schemas.repository_connection import (
 
 
 class UiAutomationSessionCreate(BaseModel):
+    """
+    Create body: Qswarm-UI ``sessionCreateInputSchema`` when ``repositoryConnectionId`` is set;
+    otherwise legacy QSwarm Web fields (``approvedCaseId``, ``repoPath``, …).
+    """
+
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
-    approved_case_id: str = Field(..., alias="approvedCaseId", min_length=1, max_length=512)
-    created_by: str = Field(..., alias="createdBy", min_length=1, max_length=256)
-    coding_engine: str = Field(default="stub", alias="codingEngine", max_length=64)
+    repository_connection_id: uuid.UUID | None = Field(default=None, alias="repositoryConnectionId")
+    branch_policy_id: uuid.UUID | None = Field(default=None, alias="branchPolicyId")
+    coding_engine: str = Field(
+        default="stub",
+        max_length=64,
+        validation_alias=AliasChoices("engine", "codingEngine"),
+    )
+    source_reference: str | None = Field(
+        default=None,
+        max_length=512,
+        validation_alias=AliasChoices("sourceRef", "sourceReference"),
+    )
+    source_label: str | None = Field(default=None, alias="sourceLabel", max_length=512)
+    approved_case_id: str | None = Field(default=None, alias="approvedCaseId", max_length=512)
+    created_by: str = Field(default="qswarm-web", alias="createdBy", min_length=1, max_length=256)
     source_system: str | None = Field(default=None, alias="sourceSystem", max_length=64)
-    source_reference: str | None = Field(default=None, alias="sourceReference", max_length=512)
     repo_id: str | None = Field(default=None, alias="repoId", max_length=256)
     repo_owner: str | None = Field(default=None, alias="repoOwner", max_length=256)
     repo_name: str | None = Field(default=None, alias="repoName", max_length=256)
@@ -38,10 +54,58 @@ class UiAutomationSessionCreate(BaseModel):
     preconditions: list[str] | None = None
     steps: list[str] | None = None
     expected_results: list[str] | None = Field(default=None, alias="expectedResults")
-    repository_connection_id: uuid.UUID | None = Field(default=None, alias="repositoryConnectionId")
 
-    def to_legacy(self) -> AutomationSessionCreateRequest:
-        return AutomationSessionCreateRequest.model_validate(self.model_dump(by_alias=False))
+    @model_validator(mode="after")
+    def _sync_case_and_source_ref(self) -> UiAutomationSessionCreate:
+        ap = (self.approved_case_id or "").strip()
+        ref = (self.source_reference or "").strip()
+        if self.repository_connection_id is not None:
+            if not ref and ap:
+                object.__setattr__(self, "source_reference", ap)
+                ref = ap
+            if not ap and ref:
+                object.__setattr__(self, "approved_case_id", ref)
+                ap = ref
+            if not ap:
+                raise ValueError("source_ref_required")
+        else:
+            if not ap:
+                raise ValueError("approved_case_id_required")
+            if not ref:
+                object.__setattr__(self, "source_reference", ap)
+        return self
+
+    def to_legacy(self, *, db: Any = None) -> AutomationSessionCreateRequest:
+        base_branch = self.base_branch
+        if db is not None and self.branch_policy_id is not None:
+            from app.db.models.repository_branch_policy import RepositoryBranchPolicy
+
+            pol = db.get(RepositoryBranchPolicy, self.branch_policy_id)
+            if pol is not None and pol.base_branch_default:
+                base_branch = pol.base_branch_default
+        steps = self.steps
+        if steps is None and self.repo_path:
+            steps = ["open"]
+        return AutomationSessionCreateRequest(
+            approved_case_id=(self.approved_case_id or "").strip(),
+            created_by=(self.created_by or "").strip() or "qswarm-web",
+            coding_engine=self.coding_engine,
+            source_system=self.source_system
+            or ("qswarm_ui" if self.repository_connection_id is not None else None),
+            source_reference=(self.source_reference or "").strip() or None,
+            repo_id=self.repo_id,
+            repo_owner=self.repo_owner,
+            repo_name=self.repo_name,
+            repo_path=self.repo_path,
+            base_branch=base_branch,
+            workflow_run_id=self.workflow_run_id,
+            case_title=self.source_label or self.case_title,
+            case_description=self.case_description,
+            preconditions=self.preconditions,
+            steps=steps,
+            expected_results=self.expected_results,
+            repository_connection_id=self.repository_connection_id,
+        )
 
 
 class UiAutomationSessionStart(BaseModel):
@@ -57,7 +121,7 @@ class UiAutomationSessionStart(BaseModel):
 class UiAutomationSessionApprove(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
-    actor_id: str = Field(..., alias="actorId", min_length=1, max_length=256)
+    actor_id: str = Field(default="qswarm-web", alias="actorId", min_length=1, max_length=256)
 
     def to_legacy_actor(self) -> str:
         return self.actor_id
@@ -66,12 +130,22 @@ class UiAutomationSessionApprove(BaseModel):
 class UiAutomationSessionRevision(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
-    actor_id: str = Field(..., alias="actorId", min_length=1, max_length=256)
-    instruction_text: str = Field(..., alias="instructionText", min_length=1, max_length=20000)
-    target_scope: str | None = Field(default=None, alias="targetScope", max_length=512)
+    actor_id: str = Field(default="qswarm-web", alias="actorId", max_length=256)
+    instruction_text: str = Field(
+        ...,
+        min_length=1,
+        max_length=20000,
+        validation_alias=AliasChoices("instruction", "instructionText"),
+    )
+    target_scope: str | None = Field(
+        default=None,
+        max_length=512,
+        validation_alias=AliasChoices("scope", "targetScope"),
+    )
 
     def to_legacy_tuple(self) -> tuple[str, str, str | None]:
-        return self.actor_id, self.instruction_text, self.target_scope
+        aid = (self.actor_id or "").strip() or "qswarm-web"
+        return aid, self.instruction_text, self.target_scope
 
 
 class UiAutomationSessionCreatePr(BaseModel):
@@ -176,36 +250,52 @@ class UiRepositoryConnectionPatch(BaseModel):
 
 
 class UiBranchPolicyCreate(BaseModel):
+    """Qswarm-UI ``branchPolicyInputSchema`` + ``repositoryConnectionId`` (required to attach policy)."""
+
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
+    name: str = Field(..., min_length=1, max_length=256)
     repository_connection_id: uuid.UUID = Field(..., alias="repositoryConnectionId")
-    base_branch_default: str = Field(default="main", alias="baseBranchDefault", max_length=256)
-    branch_naming_pattern: str = Field(
-        default="qswarm/{session_id}", alias="branchNamingPattern", max_length=512
-    )
-    allow_session_override: bool = Field(default=True, alias="allowSessionOverride")
-    commit_message_template: str | None = Field(default=None, alias="commitMessageTemplate", max_length=512)
-    pr_title_template: str | None = Field(default=None, alias="prTitleTemplate", max_length=512)
-    pr_body_template: str | None = Field(default=None, alias="prBodyTemplate")
-    default_reviewers_json: dict[str, Any] | None = Field(default=None, alias="defaultReviewersJson")
-    default_labels_json: list[Any] | None = Field(default=None, alias="defaultLabelsJson")
+    base_branch: str = Field(..., alias="baseBranch", min_length=1, max_length=256)
+    branch_pattern: str = Field(..., alias="branchPattern", min_length=1, max_length=512)
+    pr_title_template: str = Field(..., alias="prTitleTemplate", min_length=1, max_length=512)
+    pr_body_template: str = Field(default="", alias="prBodyTemplate")
 
     def to_legacy(self) -> BranchPolicyCreateRequest:
-        d = self.model_dump(by_alias=False, exclude={"repository_connection_id"})
-        return BranchPolicyCreateRequest.model_validate(d)
+        body = (self.pr_body_template or "").strip()
+        return BranchPolicyCreateRequest(
+            base_branch_default=self.base_branch.strip()[:256],
+            branch_naming_pattern=self.branch_pattern.strip()[:512],
+            allow_session_override=True,
+            commit_message_template=None,
+            pr_title_template=self.pr_title_template.strip()[:512],
+            pr_body_template=body if body else None,
+            default_reviewers_json=None,
+            default_labels_json=None,
+        )
 
 
 class UiBranchPolicyPatch(BaseModel):
+    """Partial update using Qswarm-UI field names where provided."""
+
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
-    base_branch_default: str | None = Field(default=None, alias="baseBranchDefault", max_length=256)
-    branch_naming_pattern: str | None = Field(default=None, alias="branchNamingPattern", max_length=512)
-    allow_session_override: bool | None = Field(default=None, alias="allowSessionOverride")
-    commit_message_template: str | None = Field(default=None, alias="commitMessageTemplate")
-    pr_title_template: str | None = Field(default=None, alias="prTitleTemplate")
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    base_branch: str | None = Field(default=None, alias="baseBranch", max_length=256)
+    branch_pattern: str | None = Field(default=None, alias="branchPattern", max_length=512)
+    pr_title_template: str | None = Field(default=None, alias="prTitleTemplate", max_length=512)
     pr_body_template: str | None = Field(default=None, alias="prBodyTemplate")
-    default_reviewers_json: dict[str, Any] | None = Field(default=None, alias="defaultReviewersJson")
-    default_labels_json: list[Any] | None = Field(default=None, alias="defaultLabelsJson")
+    repository_connection_id: uuid.UUID | None = Field(default=None, alias="repositoryConnectionId")
 
     def to_legacy(self) -> BranchPolicyPatchRequest:
-        return BranchPolicyPatchRequest.model_validate(self.model_dump(by_alias=False, exclude_none=True))
+        data: dict[str, Any] = {}
+        if self.base_branch is not None:
+            data["base_branch_default"] = self.base_branch.strip()[:256] if self.base_branch.strip() else None
+        if self.branch_pattern is not None:
+            data["branch_naming_pattern"] = self.branch_pattern.strip()[:512] if self.branch_pattern.strip() else None
+        if self.pr_title_template is not None:
+            data["pr_title_template"] = self.pr_title_template.strip()[:512] if self.pr_title_template.strip() else None
+        if self.pr_body_template is not None:
+            b = self.pr_body_template.strip()
+            data["pr_body_template"] = b if b else None
+        return BranchPolicyPatchRequest.model_validate(data)
