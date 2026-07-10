@@ -525,12 +525,17 @@ def approve_session(session_id: uuid.UUID, body: AutomationSessionApproveBody, d
         )
     except ValueError as e:
         msg = str(e)
-        if msg == "review_wrong_state":
+        if msg == "review_wrong_state" or msg.startswith("review_wrong_state|"):
+            detail_msg = (
+                msg.split("|", 1)[1]
+                if "|" in msg
+                else "Job can only be approved from awaiting_automation_review status"
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=ErrorDetail(
                     code="invalid_state",
-                    message="Job can only be approved from awaiting_automation_review status",
+                    message=detail_msg,
                 ).model_dump(),
             ) from e
         if msg == "review_actor_missing":

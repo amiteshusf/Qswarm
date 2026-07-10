@@ -43,6 +43,10 @@ from app.schemas.automation_session import AutomationSessionCreateRequest
 from app.services import audit_service, automation_job_service
 from app.services.automation_job_service import ChangePlanRejected, PatchRejected, WorkspaceApplyRejected
 from app.services.automation_engine_payload_builder import AutomationEnginePayloadBuilder
+from app.services.automation_session_review_state import (
+    build_session_approve_state_error_message,
+    reconcile_job_for_session_approve,
+)
 from app.services.execution_service import resolve_target_test_file
 from app.services.framework_scan_service import FrameworkScanError
 from app.services.repository_connection_service import get_repository_connection
@@ -793,6 +797,8 @@ def start_automation_session(
         raise
 
     db.refresh(job)
+
+    reconcile_job_for_session_approve(db, job)
     sync_session_status_from_job(session, job)
     db.flush()
 
@@ -938,6 +944,8 @@ def request_session_revision(
 
     db.refresh(job)
 
+    reconcile_job_for_session_approve(db, job)
+
     rr.status = AutomationReviewRequestStatus.APPLIED.value
     rnd.status = "completed" if job.status == AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value else "failed"
     session.current_round_number = next_n
@@ -1068,6 +1076,28 @@ def approve_automation_session(
     if job is None:
         raise ValueError("job_not_found")
 
+    aid = actor_id.strip()
+    if not aid:
+        raise ValueError("review_actor_missing")
+
+    reconcile_outcome = reconcile_job_for_session_approve(db, job)
+    if reconcile_outcome == "already_approved":
+        sync_session_status_from_job(session, job)
+        db.flush()
+        return session
+
+    if job.status != AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value:
+        summary = session_to_summary(db, session)
+        try:
+            from app.services.ui_v1_dashboard import map_backend_to_ui_dashboard_status
+
+            summary = {**summary, "ui_status": map_backend_to_ui_dashboard_status(summary)}
+        except Exception:
+            pass
+        raise ValueError(
+            f"review_wrong_state|{build_session_approve_state_error_message(summary=summary, job=job)}"
+        )
+
     rr = AutomationReviewRequest(
         automation_session_id=session.id,
         revision_round_id=None,
@@ -1093,7 +1123,7 @@ def approve_automation_session(
     )
     db.flush()
 
-    automation_job_service.approve_automation_job_for_pr(db, job.id, actor_id=actor_id.strip())
+    automation_job_service.approve_automation_job_for_pr(db, job.id, actor_id=aid)
     db.refresh(job)
 
     rr.status = AutomationReviewRequestStatus.APPLIED.value

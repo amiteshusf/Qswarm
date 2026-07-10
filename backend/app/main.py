@@ -9,18 +9,7 @@ from fastapi.responses import JSONResponse
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import (
-    approvals,
-    audit,
-    automation,
-    automation_sessions,
-    health,
-    intake,
-    internal_diagnostics,
-    jira,
-    repository_connections,
-    workflow,
-)
+from app.api.routes import approvals, audit, automation, automation_sessions, health, intake, jira, repository_connections, workflow
 from app.api.routes.ui_v1 import ui_v1_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -55,7 +44,6 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
-app.include_router(internal_diagnostics.router)
 app.include_router(jira.router)
 app.include_router(intake.router)
 app.include_router(workflow.router)
