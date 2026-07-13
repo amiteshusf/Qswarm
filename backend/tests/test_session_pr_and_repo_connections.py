@@ -289,6 +289,8 @@ def test_create_pr_rebuilds_workspace_when_repo_path_missing(client, tmp_path, m
 
     def _fake_pipeline(self, db, job, **kwargs):
         seen_repo_path["path"] = kwargs.get("repo_path") or ""
+        assert kwargs.get("patch_files")
+        assert kwargs.get("patch_version_id")
         return {
             "pr_number": 88,
             "pr_url": "https://github.com/acme/webapp/pull/88",
@@ -433,6 +435,143 @@ def test_create_pr_unknown_template_placeholder_returns_400(client, tmp_path, mo
 
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     get_settings.cache_clear()
+
+
+def test_create_pr_pipeline_reapplies_current_patch_after_branch_refresh(
+    client, tmp_path, monkeypatch, db_session
+):
+    """ensure_branch checks out a clean base branch; create-pr must re-apply the current patch before commit."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_fake_token_for_validate")
+    monkeypatch.setenv("QSWARM_GIT_AUTHOR_NAME", "QSwarm Test")
+    monkeypatch.setenv("QSWARM_GIT_AUTHOR_EMAIL", "test@example.org")
+    get_settings.cache_clear()
+    sid = _session_at_approved_for_pr(client, tmp_path, monkeypatch, approved_case_id="SESS-PR-PIPE")
+
+    conn = client.post("/repo-connections", json=_repo_conn_body(display_name="PipeConn"))
+    cid = conn.json()["id"]
+
+    monkeypatch.setattr(
+        "app.source_control.github_provider_adapter.create_pull_request",
+        lambda **kw: {"number": 77, "html_url": "https://github.com/acme/webapp/pull/77"},
+    )
+    monkeypatch.setattr(
+        "app.source_control.github_provider_adapter.git_push_branch",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "app.source_control.github_provider_adapter.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+
+    pr = client.post(
+        f"/automation/sessions/{sid}/create-pr",
+        json={"actor_id": "qa", "repository_connection_id": cid},
+    )
+    assert pr.status_code == 200, pr.text
+    summ = client.get(f"/automation/sessions/{sid}").json()
+    assert summ["job_status"] == AutomationJobStatus.PR_CREATED.value
+
+    rows = list(
+        db_session.scalars(select(CodeReviewRequest).where(CodeReviewRequest.automation_session_id == sid)).all()
+    )
+    assert rows[-1].status == "created"
+    assert rows[-1].external_url.endswith("/77")
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("QSWARM_GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("QSWARM_GIT_AUTHOR_EMAIL", raising=False)
+    get_settings.cache_clear()
+
+
+def test_create_pr_uses_latest_current_patch_after_revision(client, tmp_path, monkeypatch, db_session):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_fake_token_for_validate")
+    get_settings.cache_clear()
+    _playwright_fixture_repo(tmp_path)
+    _ensure_git_repo_for_session_pr(tmp_path)
+    _patch_playwright_run_for_job_and_review(monkeypatch, _stub_execution_run_factory())
+
+    r = client.post(
+        "/automation/sessions",
+        json={
+            "approved_case_id": "SESS-PR-REV2",
+            "created_by": "runner",
+            "coding_engine": "stub",
+            "repo_path": str(tmp_path.resolve()),
+            "steps": ["open"],
+        },
+    )
+    sid = uuid.UUID(r.json()["id"])
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+    assert (
+        client.post(
+            f"/automation/sessions/{sid}/request-revision",
+            json={"actor_id": "rev", "instruction_text": "tighten assertion"},
+        ).status_code
+        == 200
+    )
+    assert client.post(f"/automation/sessions/{sid}/approve", json={"actor_id": "qa"}).status_code == 200
+
+    current = db_session.scalar(
+        select(AutomationPatchVersion).where(
+            AutomationPatchVersion.automation_session_id == sid,
+            AutomationPatchVersion.is_current.is_(True),
+        )
+    )
+    assert current is not None
+    assert int(current.version_number) >= 2
+
+    captured: dict[str, object] = {}
+
+    def _capture_pipeline(self, db, job, **kwargs):
+        captured["patch_version_number"] = kwargs.get("patch_version_number")
+        captured["patch_files"] = kwargs.get("patch_files")
+        return {
+            "pr_number": 55,
+            "pr_url": "https://github.com/acme/webapp/pull/55",
+            "commit_sha": "deadbeef",
+            "source_branch": kwargs.get("source_branch"),
+            "target_branch": kwargs.get("target_branch"),
+            "refresh_notes": {},
+        }
+
+    monkeypatch.setattr(GitHubSourceControlAdapter, "run_session_pr_pipeline", _capture_pipeline)
+    conn = client.post("/repo-connections", json=_repo_conn_body(display_name="Rev2Conn"))
+    cid = conn.json()["id"]
+    pr = client.post(
+        f"/automation/sessions/{sid}/create-pr",
+        json={"actor_id": "qa", "repository_connection_id": cid},
+    )
+    assert pr.status_code == 200, pr.text
+    assert captured["patch_version_number"] == int(current.version_number)
+    assert captured["patch_files"]
+    assert isinstance(captured["patch_files"], list)
+    assert len(captured["patch_files"]) >= 1
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    get_settings.cache_clear()
+
+
+def test_reapply_current_patch_no_diff_raises_precise_error(db_session, tmp_path):
+    from app.services.workspace_cache_service import reapply_current_patch_for_pr_commit
+    from app.source_control.errors import SourceControlRepoError
+
+    root = tmp_path / "nodiff"
+    root.mkdir()
+    _playwright_fixture_repo(root)
+    _ensure_git_repo_for_session_pr(root)
+    spec = root / "tests" / "smoke.spec.ts"
+    content = spec.read_text()
+    files = [{"path": "tests/smoke.spec.ts", "action": "modify", "content": content}]
+    with pytest.raises(SourceControlRepoError) as ei:
+        reapply_current_patch_for_pr_commit(
+            root,
+            files,
+            patch_version_id=uuid.uuid4(),
+            patch_version_number=3,
+            target_branch="main",
+        )
+    assert "patch version 3" in ei.value.message
+    assert "no net git diff" in ei.value.message
 
 
 def test_source_control_provider_name_parse():

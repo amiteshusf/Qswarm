@@ -82,3 +82,44 @@ def apply_generated_patch(repo_root: Path, generated_files: list[dict[str, Any]]
         "applied_files": applied,
         "success": True,
     }
+
+
+def reapply_patch_for_pr_commit(repo_root: Path, generated_files: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Idempotent PR handoff apply: write patch file bodies onto the current branch.
+
+    Unlike :func:`apply_generated_patch`, overwrites/create-missing paths so a fresh
+  branch checkout after ``ensure_branch`` can still receive the approved patch.
+    """
+    root = repo_root.resolve()
+    applied: list[dict[str, str]] = []
+
+    for item in generated_files:
+        rel = _norm_rel(str(item["path"]))
+        if ".." in rel or rel.startswith("/"):
+            raise WorkspaceApplyError(f"unsafe path: {rel}")
+        dest = (root / rel).resolve()
+        try:
+            dest.relative_to(root)
+        except ValueError as e:
+            raise WorkspaceApplyError(f"path escapes workspace: {rel}") from e
+
+        content = item.get("content")
+        if not isinstance(content, str):
+            raise WorkspaceApplyError(f"invalid content type for {rel}")
+
+        action = str(item.get("action") or "modify").strip() or "modify"
+        try:
+            _atomic_write_text(dest, content)
+        except WorkspaceApplyError:
+            raise
+        except OSError as e:
+            raise WorkspaceApplyError(f"failed to reapply {rel}: {e}") from e
+
+        applied.append({"path": rel, "action": action})
+
+    return {
+        "workspace_path": str(root),
+        "applied_files": applied,
+        "success": True,
+    }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +181,9 @@ class GitHubSourceControlAdapter(SourceControlProviderAdapterBase):
         token: str,
         subprocess_run: Any | None = None,
         pr_client: Any | None = None,
+        patch_files: list[dict[str, Any]] | None = None,
+        patch_version_id: uuid.UUID | None = None,
+        patch_version_number: int | None = None,
     ) -> dict[str, Any]:
         """
         Full refresh → commit → push → GitHub PR (mirrors job ``pr_creation_service`` flow).
@@ -274,9 +278,20 @@ class GitHubSourceControlAdapter(SourceControlProviderAdapterBase):
                 )
 
         try:
-            if not working_tree_has_changes(repo):
+            patch_reapply_meta: dict[str, Any] | None = None
+            if patch_files and patch_version_id is not None and patch_version_number is not None:
+                from app.services.workspace_cache_service import reapply_current_patch_for_pr_commit
+
+                patch_reapply_meta = reapply_current_patch_for_pr_commit(
+                    repo,
+                    patch_files,
+                    patch_version_id=patch_version_id,
+                    patch_version_number=patch_version_number,
+                    target_branch=target_branch,
+                )
+            elif not working_tree_has_changes(repo):
                 raise SourceControlRepoError(
-                    "nothing to commit: working tree clean after refresh",
+                    "nothing to commit: working tree clean after refresh and no current patch was supplied",
                     code="source_control_repo",
                 )
             ensure_git_author_identity(repo, settings=s)
@@ -347,4 +362,5 @@ class GitHubSourceControlAdapter(SourceControlProviderAdapterBase):
             "source_branch": source_branch,
             "target_branch": target_branch,
             "refresh_notes": refresh_notes,
+            "patch_reapply": patch_reapply_meta,
         }

@@ -128,7 +128,8 @@ def test_ensure_pr_reuses_existing_git_workspace(db_session, tmp_path, monkeypat
         repository_connection_id=conn.id,
         settings=Settings(qswarm_workspace_cache_ttl_minutes=60),
     )
-    assert out == str(root.resolve())
+    assert out.repo_path == str(root.resolve())
+    assert len(out.patch_files) == 1
     rows = list(
         db_session.scalars(
             select(WorkspaceCacheEntry).where(WorkspaceCacheEntry.automation_session_id == sess.id)
@@ -171,7 +172,7 @@ def test_ensure_pr_rebuilds_when_repo_path_missing_and_reapplies_patch(db_sessio
         repository_connection_id=conn.id,
         settings=Settings(qswarm_workspace_cache_ttl_minutes=60),
     )
-    assert out == str(managed.resolve())
+    assert out.repo_path == str(managed.resolve())
     assert (managed / "tests" / "smoke.spec.ts").read_text() == "// rebuilt workspace patch\n"
     active = db_session.scalar(
         select(WorkspaceCacheEntry).where(
@@ -221,7 +222,7 @@ def test_ensure_pr_rebuilds_when_path_not_git(db_session, tmp_path, monkeypatch)
         repository_connection_id=conn.id,
         settings=Settings(),
     )
-    assert out == str(managed.resolve())
+    assert out.repo_path == str(managed.resolve())
 
 
 def test_ensure_pr_fails_clearly_without_current_patch(db_session, tmp_path):

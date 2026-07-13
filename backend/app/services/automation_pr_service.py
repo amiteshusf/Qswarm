@@ -216,7 +216,7 @@ def create_pr_for_automation_session(
             )
         gh = GitHubSourceControlAdapter(get_settings())
         token = resolve_github_token(conn, get_settings())
-        repo_ready = ensure_pr_workspace_ready(
+        workspace = ensure_pr_workspace_ready(
             db,
             session=session,
             job=job,
@@ -226,7 +226,7 @@ def create_pr_for_automation_session(
         meta = gh.run_session_pr_pipeline(
             db,
             job,
-            repo_path=repo_ready,
+            repo_path=workspace.repo_path,
             source_branch=src,
             target_branch=tgt,
             owner=conn.owner_or_org,
@@ -237,6 +237,9 @@ def create_pr_for_automation_session(
             token=token,
             subprocess_run=subprocess_run,
             pr_client=pr_client,
+            patch_files=workspace.patch_files,
+            patch_version_id=workspace.patch_version_id,
+            patch_version_number=workspace.patch_version_number,
         )
         row.status = CodeReviewRequestStatus.CREATED.value
         row.external_id = str(meta.get("pr_number")) if meta.get("pr_number") is not None else None

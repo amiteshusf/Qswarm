@@ -35,6 +35,13 @@ def _ensure_git_repo_for_session_pr(root: Path) -> None:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     subprocess.run(["git", "init"], cwd=str(root), check=True, capture_output=True, env=env)
     subprocess.run(
+        ["git", "branch", "-M", "main"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(
         ["git", "config", "user.email", "fixture@test.local"],
         cwd=str(root),
         check=True,
