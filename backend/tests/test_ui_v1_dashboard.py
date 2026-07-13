@@ -16,7 +16,7 @@ from app.services.ui_v1_dashboard import (
     [
         (
             {"status": "approved_for_pr", "job_status": "approved_for_pr", "current_round_number": 1},
-            "awaiting_review",
+            "queued",
         ),
         ({"status": "pr_created", "job_status": "pr_created", "current_round_number": 1}, "succeeded"),
         ({"status": "pr_failed", "job_status": "pr_creation_failed", "current_round_number": 1}, "failed"),

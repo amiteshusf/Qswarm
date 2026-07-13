@@ -619,9 +619,7 @@ def get_session(db: Session, session_id: uuid.UUID) -> AutomationSession | None:
 
 
 def session_to_summary(db: Session, session: AutomationSession) -> dict[str, Any]:
-    job = session.automation_job if session.automation_job_id else None
-    if job is None and session.automation_job_id:
-        job = db.get(AutomationJob, session.automation_job_id)
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
     effective_status = (
         _map_job_status_to_session(job.status).value if job else session.status
     )
@@ -1128,6 +1126,7 @@ def approve_automation_session(
 
     rr.status = AutomationReviewRequestStatus.APPLIED.value
     sync_session_status_from_job(session, job)
+    db.flush()
 
     audit_service.write_audit(
         db,

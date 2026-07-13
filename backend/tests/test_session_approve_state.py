@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.core.constants import AutomationJobStatus, AutomationSessionStatus
 from app.db.models.automation_job import AutomationJob
+from app.db.models.automation_session import AutomationSession
 from app.services.automation_session_review_state import (
     build_session_approve_state_error_message,
     reconcile_job_for_session_approve,
@@ -85,9 +86,20 @@ def test_ui_v1_approve_review_ready_session(client, tmp_path: Path, monkeypatch,
     ap = client.post(f"/api/v1/sessions/{sid}/approve", json={"actorId": "qa.lead"})
     assert ap.status_code == 200, ap.text
     body = ap.json()
-    assert body["status"] == "awaiting_review"
+    assert body["workflowStatus"] == AutomationSessionStatus.APPROVED_FOR_PR.value
+    assert body["status"] == "queued"
     job = db_session.get(AutomationJob, uuid.UUID(r.json()["automation_job_id"]))
     assert job.status == AutomationJobStatus.APPROVED_FOR_PR.value
+    sess = db_session.get(AutomationSession, uuid.UUID(sid))
+    assert sess.status == AutomationSessionStatus.APPROVED_FOR_PR.value
+
+    get_after = client.get(f"/api/v1/sessions/{sid}")
+    assert get_after.status_code == 200
+    assert get_after.json()["workflowStatus"] == AutomationSessionStatus.APPROVED_FOR_PR.value
+    assert get_after.json()["status"] == "queued"
+    approve_reviews = [r for r in get_after.json()["reviews"] if r.get("actionType") == "approve"]
+    assert approve_reviews
+    assert approve_reviews[-1]["status"] == "addressed"
 
 
 def test_ui_v1_approve_after_revision(client, tmp_path: Path, monkeypatch, db_session):
@@ -117,6 +129,7 @@ def test_ui_v1_approve_after_revision(client, tmp_path: Path, monkeypatch, db_se
     assert ap.status_code == 200, ap.text
     job = db_session.get(AutomationJob, uuid.UUID(r.json()["automation_job_id"]))
     assert job.status == AutomationJobStatus.APPROVED_FOR_PR.value
+    assert ap.json()["workflowStatus"] == AutomationSessionStatus.APPROVED_FOR_PR.value
 
 
 def test_approve_reconciles_stuck_executing_hosted_like_session(client, tmp_path: Path, monkeypatch, db_session):
@@ -165,6 +178,8 @@ def test_approve_idempotent_when_already_approved(client, tmp_path: Path, monkey
 
     ap2 = client.post(f"/api/v1/sessions/{sid}/approve", json={"actorId": "qa"})
     assert ap2.status_code == 200, ap2.text
+    assert ap2.json()["workflowStatus"] == AutomationSessionStatus.APPROVED_FOR_PR.value
+    assert ap2.json()["status"] == "queued"
 
 
 def test_approve_rejects_pending_with_clear_error(client, tmp_path: Path):

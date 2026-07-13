@@ -28,9 +28,11 @@ def _s(val: Any, *, default: str = "") -> str:
 
 def format_session_summary_for_ui(summary: dict[str, Any]) -> dict[str, Any]:
     """One ``sessionSummarySchema`` row (camelCase)."""
+    workflow_status = _s(summary.get("status"))
     out: dict[str, Any] = {
         "id": _s(summary.get("id")),
         "status": map_backend_to_ui_dashboard_status(summary),
+        "workflowStatus": workflow_status,
         "engine": _s(summary.get("coding_engine"), default="stub"),
         "repoConnectionId": _s(summary.get("repository_connection_id")),
         "sourceRef": _s(summary.get("source_reference")),
@@ -134,22 +136,30 @@ def _format_execution_for_ui(e: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _map_review_ui_status(raw: Any) -> str:
+def _map_review_ui_status(raw: Any, *, action_type: str | None = None) -> str:
     s = str(raw or "").lower().strip()
+    action = str(action_type or "").lower().strip()
     if s in ("addressed", "dismissed", "open"):
         return s
-    if s in ("closed", "resolved"):
+    if s in ("applied", "recorded") and action == "approve":
         return "addressed"
+    if s in ("closed", "resolved", "applied"):
+        return "addressed"
+    if s == "failed":
+        return "dismissed"
     return "open"
 
 
 def _format_review_for_ui(r: dict[str, Any]) -> dict[str, Any]:
+    action = _s(r.get("action_type"))
     out: dict[str, Any] = {
         "id": _s(r.get("id")),
         "createdAt": r.get("created_at") or "",
         "instruction": _s(r.get("instruction_text")),
-        "status": _map_review_ui_status(r.get("status")),
+        "status": _map_review_ui_status(r.get("status"), action_type=action or None),
     }
+    if action:
+        out["actionType"] = action
     scope = r.get("target_scope")
     if scope:
         out["scope"] = str(scope)[:8000]
