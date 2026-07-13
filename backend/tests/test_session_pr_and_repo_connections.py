@@ -178,6 +178,74 @@ def test_create_pr_rejected_when_not_approved(client, tmp_path, monkeypatch):
     assert pr.status_code == 409
 
 
+def test_create_pr_rejects_patch_identical_to_base(client, tmp_path, monkeypatch, db_session):
+    import subprocess
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_fake_token_for_validate")
+    monkeypatch.setenv("QSWARM_GIT_AUTHOR_NAME", "QSwarm Test")
+    monkeypatch.setenv("QSWARM_GIT_AUTHOR_EMAIL", "test@example.org")
+    get_settings.cache_clear()
+    sid = _session_at_approved_for_pr(client, tmp_path, monkeypatch, approved_case_id="SESS-PR-SAME")
+
+    main_content = subprocess.run(
+        ["git", "show", "main:tests/smoke.spec.ts"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    patch_v = db_session.scalar(
+        select(AutomationPatchVersion).where(
+            AutomationPatchVersion.automation_session_id == sid,
+            AutomationPatchVersion.is_current.is_(True),
+        )
+    )
+    assert patch_v is not None
+    patch_v.patch_json = {
+        "framework_type": "playwright",
+        "target_test_file": "tests/smoke.spec.ts",
+        "generated_files": [
+            {"path": "tests/smoke.spec.ts", "action": "modify", "content": main_content},
+        ],
+        "reused_files": [],
+        "generation_notes": [],
+    }
+    db_session.flush()
+
+    conn = client.post("/repo-connections", json=_repo_conn_body(display_name="SameBaseConn"))
+    cid = conn.json()["id"]
+    monkeypatch.setattr(
+        "app.source_control.github_provider_adapter.git_push_branch",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "app.source_control.github_provider_adapter.create_pull_request",
+        lambda **kw: {"number": 1, "html_url": "https://github.com/acme/webapp/pull/1"},
+    )
+    monkeypatch.setattr(
+        "app.source_control.github_provider_adapter.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+
+    pr = client.post(
+        f"/automation/sessions/{sid}/create-pr",
+        json={"actor_id": "qa", "repository_connection_id": cid},
+    )
+    assert pr.status_code == 400, pr.text
+    detail = pr.json()["detail"]
+    assert detail["code"] == "pr_patch_identical_to_base"
+    assert "no pull request is needed" in detail["message"]
+    assert "smoke.spec.ts" in detail["message"]
+
+    summ = client.get(f"/automation/sessions/{sid}").json()
+    assert summ["job_status"] == AutomationJobStatus.PR_CREATION_FAILED.value
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("QSWARM_GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("QSWARM_GIT_AUTHOR_EMAIL", raising=False)
+    get_settings.cache_clear()
+
+
 def test_create_pr_success_and_list_requests(client, tmp_path, monkeypatch, db_session):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_fake_token_for_validate")
     get_settings.cache_clear()
@@ -553,7 +621,7 @@ def test_create_pr_uses_latest_current_patch_after_revision(client, tmp_path, mo
 
 def test_reapply_current_patch_no_diff_raises_precise_error(db_session, tmp_path):
     from app.services.workspace_cache_service import reapply_current_patch_for_pr_commit
-    from app.source_control.errors import SourceControlRepoError
+    from app.source_control.errors import SourceControlConfigurationError
 
     root = tmp_path / "nodiff"
     root.mkdir()
@@ -562,7 +630,7 @@ def test_reapply_current_patch_no_diff_raises_precise_error(db_session, tmp_path
     spec = root / "tests" / "smoke.spec.ts"
     content = spec.read_text()
     files = [{"path": "tests/smoke.spec.ts", "action": "modify", "content": content}]
-    with pytest.raises(SourceControlRepoError) as ei:
+    with pytest.raises(SourceControlConfigurationError) as ei:
         reapply_current_patch_for_pr_commit(
             root,
             files,
@@ -570,8 +638,9 @@ def test_reapply_current_patch_no_diff_raises_precise_error(db_session, tmp_path
             patch_version_number=3,
             target_branch="main",
         )
+    assert ei.value.code == "pr_patch_identical_to_base"
     assert "patch version 3" in ei.value.message
-    assert "no net git diff" in ei.value.message
+    assert "no pull request is needed" in ei.value.message
 
 
 def test_source_control_provider_name_parse():

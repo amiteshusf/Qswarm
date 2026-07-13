@@ -95,6 +95,22 @@ def job_branch_name(approved_case_id: str, job_id: uuid.UUID) -> str:
     return f"qswarm/{slug}-{str(job_id)[:8]}"
 
 
+def resolve_base_branch_ref(repo: Path, base_branch: str, remote: str = DEFAULT_REMOTE) -> str:
+    """Return a ref that can be checked out or merged (local branch or remote tracking)."""
+    return _resolve_base_ref(repo, base_branch, remote)
+
+
+def read_file_at_git_ref(repo: Path, ref: str, rel_path: str) -> str | None:
+    """Return file text at ``ref:rel_path``, or ``None`` when the path is absent at that ref."""
+    rel = rel_path.strip().replace("\\", "/")
+    if not rel or ".." in rel or rel.startswith("/"):
+        return None
+    r = _run_git(repo, ["show", f"{ref}:{rel}"])
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
 def _resolve_base_ref(repo: Path, base_branch: str, remote: str) -> str:
     """Return a ref that can be checked out or merged (local branch or remote tracking)."""
     a = _run_git(repo, ["rev-parse", "--verify", base_branch])

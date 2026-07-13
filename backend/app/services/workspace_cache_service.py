@@ -18,6 +18,11 @@ from app.db.models.automation_patch_version import AutomationPatchVersion
 from app.db.models.automation_session import AutomationSession
 from app.db.models.workspace_cache_entry import WorkspaceCacheEntry
 from app.services.git_workspace_service import GitWorkspaceError, ensure_git_repo, working_tree_has_changes
+from app.services.patch_base_diff_service import (
+    compare_patch_files_to_base,
+    format_patch_identical_to_base_error,
+    format_patch_no_git_diff_after_reapply_error,
+)
 from app.services.repo_workspace_service import (
     RepoWorkspaceError,
     WorkspacePreparationResult,
@@ -267,13 +272,30 @@ def reapply_current_patch_for_pr_commit(
     Write the approved patch onto the checked-out branch and require a non-clean tree.
 
     Raises:
-        SourceControlRepoError: apply failed or patch content matches base with no diff.
+        SourceControlConfigurationError: patch content matches base exactly (no PR needed).
+        SourceControlRepoError: apply failed or unexpected no-diff after re-apply.
     """
     if not patch_files:
         raise SourceControlRepoError(
             "Current patch version has no files to re-apply before commit.",
             code="source_control_repo",
         )
+
+    try:
+        comparison = compare_patch_files_to_base(repo_root, target_branch, patch_files)
+    except GitWorkspaceError as e:
+        raise SourceControlRepoError(e.message, code="source_control_repo") from e
+
+    if comparison.all_patch_files_match_base:
+        raise SourceControlConfigurationError(
+            format_patch_identical_to_base_error(
+                patch_version_number=patch_version_number,
+                patch_version_id=str(patch_version_id),
+                comparison=comparison,
+            ),
+            code="pr_patch_identical_to_base",
+        )
+
     try:
         result = reapply_patch_for_pr_commit(repo_root, patch_files)
     except WorkspaceApplyError as e:
@@ -289,14 +311,22 @@ def reapply_current_patch_for_pr_commit(
             "patch_version_id": str(patch_version_id),
             "patch_version_number": patch_version_number,
             "has_working_tree_diff": True,
+            "base_comparison": {
+                "target_branch": comparison.target_branch,
+                "base_ref": comparison.base_ref,
+                "identical_paths": list(comparison.identical_paths),
+                "differing_paths": list(comparison.differing_paths),
+                "new_paths": list(comparison.new_paths),
+            },
         }
 
-    paths = ", ".join(str(x.get("path")) for x in patch_files[:8])
-    extra = f" (+{len(patch_files) - 8} more)" if len(patch_files) > 8 else ""
     raise SourceControlRepoError(
-        "nothing to commit after re-applying current patch version "
-        f"{patch_version_number} (id={patch_version_id}) onto branch refreshed from "
-        f"{target_branch!r}; {len(patch_files)} file(s) ({paths}{extra}) produced no net git diff",
+        format_patch_no_git_diff_after_reapply_error(
+            patch_version_number=patch_version_number,
+            patch_version_id=str(patch_version_id),
+            target_branch=target_branch,
+            comparison=comparison,
+        ),
         code="source_control_repo",
     )
 
