@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import subprocess
 import uuid
@@ -11,8 +10,6 @@ from typing import Any
 
 DEFAULT_REMOTE = "origin"
 GIT_TIMEOUT_S = 120
-
-logger = logging.getLogger(__name__)
 
 
 class GitWorkspaceError(Exception):
@@ -78,10 +75,6 @@ def ensure_git_author_identity(repo: Path, *, settings: Any) -> None:
         if r.returncode != 0:
             err = (r.stderr or r.stdout or "git config failed").strip()[:2048]
             raise GitWorkspaceError(f"git config {key} failed: {err}")
-    logger.info(
-        "git_author_identity_configured",
-        extra={"repo": str(repo.resolve()), "scope": "local"},
-    )
 
 
 def has_git_remote(repo: Path, remote: str = DEFAULT_REMOTE) -> bool:

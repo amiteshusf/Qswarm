@@ -12,7 +12,7 @@ _settings = get_settings()
 engine = create_engine(
     _settings.database_url,
     pool_pre_ping=True,
-    echo=_settings.app_debug,
+    echo=_settings.database_echo,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

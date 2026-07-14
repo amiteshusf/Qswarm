@@ -184,7 +184,7 @@ def bootstrap_node_workspace(
             "package_lock_usable_for_npm_ci": lock_usable,
             "skip_reason": "no_npm_manifest",
         }
-        logger.info(
+        logger.debug(
             "repo_bootstrap_skipped",
             extra={
                 "workspace": str(ws),
@@ -303,7 +303,7 @@ def bootstrap_node_workspace(
         "node_modules_path_checked": str(nm_path),
         "playwright_test_path_checked": str(pwt_path),
     }
-    logger.info(
+    logger.debug(
         "repo_bootstrap_completed",
         extra={
             "workspace": str(ws),

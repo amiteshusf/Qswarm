@@ -8,7 +8,6 @@ TODO: swap CLI subprocess internals for Copilot SDK or cloud-agent without chang
 from __future__ import annotations
 
 import json
-import logging
 import shlex
 import shutil
 from pathlib import Path
@@ -43,8 +42,6 @@ from app.db.models.automation_job import AutomationJob
 from app.services import audit_service, automation_job_service
 from app.services.automation_review_service import apply_review_revision_with_external_patch
 from app.services.framework_scan_service import FrameworkScanError, resolve_repo_path
-
-logger = logging.getLogger(__name__)
 
 _COPILOT_PROMPT_FLAGS = frozenset({"-p", "--print", "--prompt"})
 _STDOUT_TAIL_MAX = 8000
@@ -213,19 +210,6 @@ def _invoke_copilot_cli(
         **invocation,
         "argv_summary": summarize_copilot_argv(argv),
     }
-    logger.info(
-        "copilot_cli_started",
-        extra={
-            "job_id": str(job.id),
-            "task_type": task_type.value,
-            "executable": invocation["executable"],
-            "extra_args": invocation["extra_args"],
-            "prompt_flag": invocation["prompt_flag"],
-            "prompt_char_count": invocation["prompt_char_count"],
-            "timeout_seconds": invocation["timeout_seconds"],
-            "cwd": str(root),
-        },
-    )
     _audit_copilot_cli(db, job, actor_id, phase="started", task_type=task_type, payload=start_payload)
     db.flush()
     try:
@@ -242,16 +226,6 @@ def _invoke_copilot_cli(
         raise
     run_metadata = _build_cli_run_metadata(invocation, proc_meta, cwd=root)
     complete_payload = {**run_metadata, "success": True}
-    logger.info(
-        "copilot_cli_completed",
-        extra={
-            "job_id": str(job.id),
-            "task_type": task_type.value,
-            "exit_code": proc_meta.get("exit_code"),
-            "duration_ms": proc_meta.get("duration_ms"),
-            "extra_args": invocation["extra_args"],
-        },
-    )
     _audit_copilot_cli(db, job, actor_id, phase="completed", task_type=task_type, payload=complete_payload)
     db.flush()
     return proc_meta, run_metadata

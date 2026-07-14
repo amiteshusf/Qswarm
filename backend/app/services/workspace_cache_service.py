@@ -228,7 +228,7 @@ def record_workspace_cache_after_hosted_materialize(
         return
     cid = repository_connection_id or session.repository_connection_id
     _upsert_active_cache(db, session=session, workspace_path=path, repository_connection_id=cid, settings=s)
-    logger.info(
+    logger.debug(
         "workspace_cache_recorded",
         extra={"session_id": str(session.id), "workspace_path": path},
     )
@@ -431,7 +431,7 @@ def ensure_pr_workspace_ready(
         repository_connection_id=repository_connection_id,
         settings=s,
     )
-    logger.info(
+    logger.debug(
         "pr_workspace_rebuilt",
         extra={"session_id": str(session.id), "workspace_path": str(repo_root), "patch_version_id": str(patch_v.id)},
     )

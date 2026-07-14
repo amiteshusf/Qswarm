@@ -28,6 +28,11 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://postgres:postgres@localhost:5432/qswarm",
         alias="DATABASE_URL",
     )
+    database_echo: bool = Field(
+        default=False,
+        alias="DATABASE_ECHO",
+        description="When true, SQLAlchemy logs SQL statements (independent of APP_DEBUG).",
+    )
 
     jira_base_url: str = Field(default="", alias="JIRA_BASE_URL")
     jira_email: str = Field(default="", alias="JIRA_EMAIL")
@@ -83,7 +88,7 @@ class Settings(BaseSettings):
         description=(
             "Extra Copilot CLI argv tokens (POSIX shlex-split) inserted after COMMAND and before "
             "-p/--prompt + task prompt. Hosted headless runs typically need write approval flags, "
-            "e.g. --allow-all-tools --allow-all-paths (see GitHub Copilot CLI docs)."
+            "e.g. --allow-tool=write --allow-all-paths (see GitHub Copilot CLI docs)."
         ),
     )
     qswarm_copilot_agent_allow_revision: bool = Field(

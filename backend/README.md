@@ -106,8 +106,9 @@ Sprint 1 can still be started explicitly via `POST /workflow/runs` and `POST /wo
 
 | Variable | Purpose |
 |----------|---------|
-| `APP_NAME`, `APP_ENV`, `APP_DEBUG` | App metadata / logging |
+| `APP_NAME`, `APP_ENV`, `APP_DEBUG` | App metadata / structlog verbosity (`APP_DEBUG=false` on hosted) |
 | `DATABASE_URL` | SQLAlchemy URL (`postgresql+psycopg://...` recommended) |
+| `DATABASE_ECHO` | When `true`, log SQL statements (default `false`; independent of `APP_DEBUG`) |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Live Jira (Basic auth) |
 | `JIRA_USE_STUB` | When `true` or token missing, Jira calls use stub data |
 | `JIRA_DEFAULT_TEST_REVIEWER_ACCOUNT_ID` | Optional Atlassian `accountId` to assign generated draft Jira Tasks after publish |
@@ -121,19 +122,24 @@ Sprint 1 can still be started explicitly via `POST /workflow/runs` and `POST /wo
 | `QSWARM_CLAUDE_CODE_ALLOW_REVISION` | When `false`, adapter rejects revision requests |
 | `QSWARM_COPILOT_AGENT_ENABLED` | When `true`, session `coding_engine=copilot_agent` may run the Copilot CLI adapter (requires **`QSWARM_COPILOT_AGENT_COMMAND`**) |
 | `QSWARM_COPILOT_AGENT_COMMAND` | Copilot CLI executable (argv0) or absolute path (no shell) |
-| `QSWARM_COPILOT_AGENT_EXTRA_ARGS` | Optional argv tokens (`shlex.split`, POSIX) inserted after `COMMAND` and before `-p` + prompt. **Hosted headless** runs typically need Copilot write approval flags, e.g. `--allow-all-tools --allow-all-paths` (see [Copilot CLI docs](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli)). Each invocation is audited under step `copilot_cli` with `extra_args`, `argv_summary` (prompt omitted), and stdout/stderr tails. |
+| `QSWARM_COPILOT_AGENT_EXTRA_ARGS` | Optional argv tokens (`shlex.split`, POSIX) inserted after `COMMAND` and before `-p` + prompt. **Hosted headless** runs need Copilot write approval flags, e.g. `--allow-tool=write --allow-all-paths` (see [Copilot CLI docs](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli)). Each invocation is audited under step `copilot_cli` with `extra_args`, `argv_summary` (prompt omitted), and stdout/stderr tails. |
 | `QSWARM_COPILOT_AGENT_ALLOW_REVISION` | When `false`, adapter rejects revision requests |
 | `QSWARM_COPILOT_AGENT_TIMEOUT_SECONDS` | Subprocess timeout for each Copilot CLI invocation |
 
-**Hosted Render example (`copilot_agent`):**
+**Hosted Render POC (`copilot_agent`, single web service, inline session execution):**
 
 ```bash
+APP_ENV=production
+APP_DEBUG=false
+DATABASE_ECHO=false
 QSWARM_COPILOT_AGENT_ENABLED=true
 QSWARM_COPILOT_AGENT_COMMAND=copilot   # or absolute path to npm-loader.js
-QSWARM_COPILOT_AGENT_EXTRA_ARGS=--allow-all-tools --allow-all-paths
+QSWARM_COPILOT_AGENT_EXTRA_ARGS=--allow-tool=write --allow-all-paths
 QSWARM_COPILOT_AGENT_ALLOW_REVISION=true
 QSWARM_COPILOT_AGENT_TIMEOUT_SECONDS=600
-GITHUB_TOKEN=...   # or GH_TOKEN — non-interactive Copilot auth
+GITHUB_TOKEN=...   # PAT with repo read+write for clone/push and PR API
+QSWARM_GIT_AUTHOR_NAME=...
+QSWARM_GIT_AUTHOR_EMAIL=...
 ```
 | `PLAYWRIGHT_EXECUTION_TIMEOUT_SECONDS` | Subprocess timeout for `POST .../execute` (default **120**) |
 | `GITHUB_TOKEN` | PAT for hosted **git clone** on session start (GitHub HTTPS), **`POST /automation/jobs/{id}/create-pr`**, and **session** **`POST /automation/sessions/{id}/create-pr`** (repo scope: contents + pull requests). Repository connections may reference a different env var via **`credential_reference`** when **`auth_type=github_pat_env`**. Never commit real tokens. |

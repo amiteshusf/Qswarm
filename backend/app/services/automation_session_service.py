@@ -111,33 +111,11 @@ def _run_repo_bootstrap_for_session(
         plan = build_repo_bootstrap_plan(profile, root)
         planned_cmd = plan.command
         stack = plan.strategy_key
-        gate_extra = {
-            "framework_name": profile.framework_name,
-            "framework_family": profile.framework_family,
-            "bootstrap_strategy": profile.bootstrap_strategy,
-            "repo_bootstrap_plan_strategy": plan.strategy_key,
-        }
-        if profile.framework_name == "playwright":
-            gate_extra["planned_playwright_chromium_install"] = ["npx", "playwright", "install", "chromium"]
     else:
         profile = None
         plan = None
         planned_cmd, stack = planned_npm_bootstrap_command(root)
-        gate_extra = {}
 
-    logger.info(
-        "repo_bootstrap_gate",
-        extra={
-            "automation_job_id": str(job.id),
-            "automation_session_id": str(session.id),
-            "workspace_profile": workspace_profile,
-            "workspace_path": rp,
-            "prep_mode": prep_mode,
-            "detected_stack": stack,
-            "planned_command": planned_cmd,
-            **gate_extra,
-        },
-    )
     start_payload: dict[str, Any] = {
         "workspace_path": rp,
         "workspace_profile": workspace_profile,
@@ -169,12 +147,10 @@ def _run_repo_bootstrap_for_session(
         payload=start_payload,
     )
     db.flush()
-    framework_name_log: str | None = None
     try:
         if workspace_profile == "hosted_materialized":
             hosted = prepare_hosted_materialized_execution(root, settings=get_settings())
             res = hosted.bootstrap_result
-            framework_name_log = hosted.profile.framework_name
             done_payload = bootstrap_result_to_audit_payload(res)
             done_payload["framework_runtime_profile"] = hosted.profile.to_audit_dict()
             done_payload["runtime_validation"] = hosted.runtime_validation.to_audit_dict()
@@ -199,26 +175,6 @@ def _run_repo_bootstrap_for_session(
             payload=done_payload,
         )
         db.flush()
-        pw_bp = (
-            done_payload.get("playwright_browser_preparation")
-            if workspace_profile == "hosted_materialized"
-            else None
-        )
-        logger.info(
-            "repo_bootstrap_finished",
-            extra={
-                "automation_job_id": str(job.id),
-                "workspace_profile": workspace_profile,
-                "bootstrap_required": res.bootstrap_required,
-                "command": res.command,
-                "success": res.success,
-                "notes": res.notes,
-                "framework_name": framework_name_log,
-                "playwright_browser_prep_success": (
-                    pw_bp.get("success") if isinstance(pw_bp, dict) else None
-                ),
-            },
-        )
     except (RepoBootstrapError, HostedExecutionPreparationError) as e:
         fail_payload: dict[str, Any] = {"success": False, "code": e.code, "message": e.message[:4000]}
         if isinstance(e, RuntimeValidationError):
@@ -678,10 +634,6 @@ def start_automation_session(
     if not aid:
         raise ValueError("actor_missing")
 
-    logger.info(
-        "automation_session_start_entered",
-        extra={"automation_session_id": str(session.id), "automation_job_id": str(job.id)},
-    )
     try:
         prep = prepare_automation_session_workspace(
             db,

@@ -420,7 +420,7 @@ def _validate_playwright_npm_layout(
             path=str(pwt),
         )
 
-    logger.info(
+    logger.debug(
         "runtime_validation_succeeded",
         extra={
             "bootstrap_cwd": str(ws),
@@ -504,7 +504,7 @@ def run_hosted_playwright_chromium_browser_install(
     argv = list(_HOSTED_PLAYWRIGHT_CHROMIUM_INSTALL_ARGV)
     run = subprocess_runner or run_subprocess_argv
     timeout = float(settings.qswarm_playwright_browser_install_timeout_seconds)
-    logger.info(
+    logger.debug(
         "playwright_browser_prep_started",
         extra={"cwd": str(ws), "command": argv, "framework_name": "playwright"},
     )
@@ -568,7 +568,7 @@ def run_hosted_playwright_chromium_browser_install(
             details=details,
         )
 
-    logger.info(
+    logger.debug(
         "playwright_browser_prep_completed",
         extra={
             "cwd": str(ws),
@@ -606,7 +606,7 @@ def prepare_hosted_materialized_execution(
     root = workspace.resolve()
 
     profile = detect_framework_runtime(root)
-    logger.info(
+    logger.debug(
         "framework_runtime_detected",
         extra={"framework_name": profile.framework_name, "bootstrap_strategy": profile.bootstrap_strategy},
     )
@@ -614,7 +614,7 @@ def prepare_hosted_materialized_execution(
     assert_hosted_framework_supported(profile)
 
     plan = build_repo_bootstrap_plan(profile, root)
-    logger.info(
+    logger.debug(
         "repo_bootstrap_plan",
         extra={
             "framework_name": profile.framework_name,
