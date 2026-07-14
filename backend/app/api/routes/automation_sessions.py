@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import DbSession
 from app.automation_engine.engine_errors import (
@@ -217,7 +217,6 @@ def list_review_requests(session_id: uuid.UUID, db: DbSession):
 def start_session(
     session_id: uuid.UUID,
     db: DbSession,
-    response: Response,
     body: AutomationSessionStartRequest | None = None,
 ):
     if automation_session_service.get_session(db, session_id) is None:
@@ -228,7 +227,7 @@ def start_session(
     actor = (body.actor_id if body else None) or None
     repo_conn = body.repository_connection_id if body else None
     try:
-        op = automation_session_service.start_automation_session(
+        sess = automation_session_service.start_automation_session(
             db, session_id, actor_id=actor, repository_connection_id=repo_conn
         )
     except RepoAuthError as e:
@@ -313,14 +312,6 @@ def start_session(
                     message="This session has already been started",
                 ).model_dump(),
             ) from e
-        if msg == "session_round_in_progress":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ErrorDetail(
-                    code="session_round_in_progress",
-                    message="An automation round is already queued or running for this session",
-                ).model_dump(),
-            ) from e
         if msg == "job_not_pending":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -337,21 +328,14 @@ def start_session(
         raise
 
     db.commit()
-    sess = op.session
     db.refresh(sess)
     summ = automation_session_service.session_to_summary(db, sess)
     job = summ.get("job_status")
-    if op.accepted_async:
-        response.status_code = status.HTTP_202_ACCEPTED
-        message = "Initial round queued for background execution."
-    else:
-        message = "Initial round completed (plan, patch, execute)."
     return AutomationSessionStartResponse(
         id=str(sess.id),
         status=summ["status"],
         job_status=job,
-        message=message,
-        accepted_async=op.accepted_async,
+        message="Initial round completed (plan, patch, execute).",
     )
 
 
@@ -367,14 +351,14 @@ def start_session(
         504: {"model": ErrorResponse},
     },
 )
-def request_revision(session_id: uuid.UUID, body: AutomationSessionRevisionBody, db: DbSession, response: Response):
+def request_revision(session_id: uuid.UUID, body: AutomationSessionRevisionBody, db: DbSession):
     if automation_session_service.get_session(db, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ErrorDetail(code="not_found", message="Automation session not found").model_dump(),
         )
     try:
-        op = automation_session_service.request_session_revision(
+        sess = automation_session_service.request_session_revision(
             db,
             session_id,
             actor_id=body.actor_id,
@@ -458,31 +442,16 @@ def request_revision(session_id: uuid.UUID, body: AutomationSessionRevisionBody,
                     message="Job prerequisites for review revision are not met",
                 ).model_dump(),
             ) from e
-        if msg == "revision_in_progress":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ErrorDetail(
-                    code="revision_in_progress",
-                    message="A revision round is already queued or running for this session",
-                ).model_dump(),
-            ) from e
         raise
 
     db.commit()
-    sess = op.session
     db.refresh(sess)
     summ = automation_session_service.session_to_summary(db, sess)
-    if op.accepted_async:
-        response.status_code = status.HTTP_202_ACCEPTED
-        message = "Revision round queued for background execution."
-    else:
-        message = "Revision round recorded."
     return AutomationSessionSimpleResponse(
         id=str(sess.id),
         status=summ["status"],
         job_status=summ.get("job_status"),
-        message=message,
-        accepted_async=op.accepted_async,
+        message="Revision round recorded.",
     )
 
 

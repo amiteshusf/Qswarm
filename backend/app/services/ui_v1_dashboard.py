@@ -56,8 +56,6 @@ def map_backend_to_ui_dashboard_status(summary: dict[str, Any]) -> str:
         return "succeeded"
     if job == "revising_after_review":
         return "revising"
-    if job == "queued":
-        return "queued"
     if eff == "approved_for_pr" or job == "approved_for_pr":
         return "queued"
     if eff == "creating_pr" or job == "creating_pr":

@@ -609,14 +609,14 @@ def test_session_start_hosted_validation_failure_blocks_execution_and_no_attempt
     assert sess is not None and job_row is not None
     assert sess.status == AutomationSessionStatus.FAILED.value
     assert job_row.status == AutomationJobStatus.FAILED.value
-    assert sess.current_round_number == 1
+    assert sess.current_round_number == 0
 
     n_rounds = db_session.scalar(
         select(func.count()).select_from(AutomationRevisionRound).where(
             AutomationRevisionRound.automation_session_id == sid
         )
     )
-    assert int(n_rounds or 0) == 1
+    assert int(n_rounds or 0) == 0
 
     pre_fail = db_session.scalars(
         select(AuditLog).where(
@@ -710,11 +710,7 @@ def test_session_start_bootstrap_failure_returns_400_and_skips_execution(
             AutomationRevisionRound.automation_session_id == sid
         )
     )
-    assert int(n_rounds or 0) == 1
-    failed_round = db_session.scalar(
-        select(AutomationRevisionRound).where(AutomationRevisionRound.automation_session_id == sid)
-    )
-    assert failed_round.status == "failed"
+    assert int(n_rounds or 0) == 0
 
 
 def test_session_start_workspace_prep_failure_marks_session_and_job_failed(

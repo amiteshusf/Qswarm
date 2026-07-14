@@ -11,7 +11,6 @@ from sqlalchemy.orm import sessionmaker
 # In-memory SQLite before app imports settings
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("JIRA_USE_STUB", "true")
-os.environ.setdefault("QSWARM_AUTOMATION_RUN_WORKER_INLINE", "true")
 
 from app.core.config import get_settings
 import app.db.models  # noqa: F401 — register all ORM models on Base.metadata
