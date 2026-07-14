@@ -69,6 +69,7 @@ class AutomationSessionStartResponse(BaseModel):
     status: str
     job_status: str | None
     message: str = "Session start pipeline finished."
+    accepted_async: bool = False
 
 
 class AutomationSessionRevisionBody(BaseModel):
@@ -91,6 +92,7 @@ class AutomationSessionSimpleResponse(BaseModel):
     status: str
     job_status: str | None
     message: str
+    accepted_async: bool = False
 
 
 class AutomationRevisionRoundsListResponse(BaseModel):

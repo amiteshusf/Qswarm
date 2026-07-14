@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -229,9 +229,14 @@ def ui_create_session(body: UiAutomationSessionCreate, db: DbSession):
         504: {"model": ErrorResponse},
     },
 )
-def ui_start_session(session_id: uuid.UUID, db: DbSession, body: UiAutomationSessionStart | None = None):
+def ui_start_session(
+    session_id: uuid.UUID,
+    db: DbSession,
+    response: Response,
+    body: UiAutomationSessionStart | None = None,
+):
     legacy = (body or UiAutomationSessionStart()).to_legacy()
-    as_routes.start_session(session_id, db, legacy)
+    as_routes.start_session(session_id, db, response, legacy)
     return build_session_detail_json_for_ui(db, session_id)
 
 
@@ -239,12 +244,17 @@ def ui_start_session(session_id: uuid.UUID, db: DbSession, body: UiAutomationSes
     "/sessions/{session_id}/request-revision",
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
-def ui_request_revision(session_id: uuid.UUID, body: UiAutomationSessionRevision, db: DbSession):
+def ui_request_revision(
+    session_id: uuid.UUID,
+    body: UiAutomationSessionRevision,
+    db: DbSession,
+    response: Response,
+):
     actor_id, instruction_text, target_scope = body.to_legacy_tuple()
     legacy = AutomationSessionRevisionBody(
         actor_id=actor_id, instruction_text=instruction_text, target_scope=target_scope
     )
-    as_routes.request_revision(session_id, legacy, db)
+    as_routes.request_revision(session_id, legacy, db, response)
     return build_session_detail_json_for_ui(db, session_id)
 
 

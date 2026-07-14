@@ -97,6 +97,19 @@ class Settings(BaseSettings):
         le=7200,
     )
 
+    # Automation session rounds: when false (default), POST /start and /request-revision enqueue work
+    # for the background worker; when true, the worker runs inline in the same process (tests/local).
+    qswarm_automation_run_worker_inline: bool = Field(
+        default=False,
+        alias="QSWARM_AUTOMATION_RUN_WORKER_INLINE",
+    )
+    qswarm_automation_worker_poll_seconds: float = Field(
+        default=2.0,
+        alias="QSWARM_AUTOMATION_WORKER_POLL_SECONDS",
+        ge=0.25,
+        le=60.0,
+    )
+
     # Playwright subprocess run (seconds)
     playwright_execution_timeout_seconds: int = Field(
         default=120,

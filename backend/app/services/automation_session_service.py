@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from app.core.constants import (
     AutomationJobStatus,
     AutomationReviewRequestAction,
     AutomationReviewRequestStatus,
+    AutomationRevisionRoundStatus,
     AutomationRevisionRoundTrigger,
     AutomationSessionStatus,
 )
@@ -76,6 +78,10 @@ from app.services.repo_workspace_service import (
     resolve_workspace_bootstrap_profile,
 )
 from app.services.workspace_cache_service import record_workspace_cache_after_hosted_materialize
+from app.services.automation_round_worker_service import (
+    maybe_run_round_inline,
+    session_has_active_round,
+)
 from app.services.workspace_material_change_service import (
     RevisionNoMaterialChangeError,
     capture_workspace_snapshot,
@@ -86,6 +92,348 @@ from app.services.workspace_material_change_service import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SessionOperationResult:
+    """Result of enqueueing (and optionally inline-running) a session operation."""
+
+    session: AutomationSession
+    accepted_async: bool
+
+
+def _operation_accepted_async() -> bool:
+    return not get_settings().qswarm_automation_run_worker_inline
+
+
+def _mark_round_in_progress(
+    db: Session,
+    *,
+    session: AutomationSession,
+    rnd: AutomationRevisionRound,
+    actor_id: str,
+    step_name: str,
+) -> None:
+    if rnd.status != AutomationRevisionRoundStatus.QUEUED.value:
+        return
+    rnd.status = AutomationRevisionRoundStatus.IN_PROGRESS.value
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_ROUND_STARTED.value,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=actor_id[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name=step_name,
+        entity_type="automation_revision_round",
+        entity_id=str(rnd.id),
+        payload={
+            "round_number": rnd.round_number,
+            "trigger": rnd.trigger_type,
+            "execution": "background_worker",
+        },
+    )
+    db.flush()
+
+
+def _restore_job_status_for_round_execution(job: AutomationJob, trigger_type: str) -> None:
+    """Reset queued job status so legacy job-service transitions can run in the worker."""
+    if job.status != AutomationJobStatus.QUEUED.value:
+        return
+    if trigger_type == AutomationRevisionRoundTrigger.INITIAL.value:
+        job.status = AutomationJobStatus.PENDING.value
+    elif trigger_type == AutomationRevisionRoundTrigger.REVIEW_REVISION.value:
+        job.status = AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value
+
+
+def execute_initial_automation_round(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    round_id: uuid.UUID,
+    repository_connection_id: uuid.UUID | None = None,
+) -> None:
+    """Heavy initial round: workspace prep, bootstrap, engine, patch, execution."""
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+    rnd = db.get(AutomationRevisionRound, round_id)
+    if rnd is None or rnd.automation_session_id != session.id:
+        raise ValueError("round_not_found")
+
+    repo_conn = repository_connection_id or session.repository_connection_id
+    aid = rnd.started_by
+    _mark_round_in_progress(
+        db, session=session, rnd=rnd, actor_id=aid, step_name="automation_session_start"
+    )
+    _restore_job_status_for_round_execution(job, rnd.trigger_type)
+    db.flush()
+
+    try:
+        prep = prepare_automation_session_workspace(
+            db,
+            session=session,
+            job=job,
+            repository_connection_id=repo_conn,
+            settings=get_settings(),
+        )
+        record_workspace_cache_after_hosted_materialize(
+            db,
+            session=session,
+            job=job,
+            prep=prep,
+            repository_connection_id=repo_conn,
+            settings=get_settings(),
+        )
+        profile = resolve_workspace_bootstrap_profile(session, job, prep=prep, settings=get_settings())
+        _run_repo_bootstrap_for_session(
+            db,
+            session=session,
+            job=job,
+            actor_id=aid,
+            workspace_profile=profile,
+            prep_mode=prep.mode,
+        )
+    except (RepoAuthError, RepoWorkspaceError, RepoBootstrapError, HostedExecutionPreparationError) as e:
+        stage = _session_start_pre_round_failure_stage(e)
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        _persist_session_start_pre_round_failure(
+            db, session=session, job=job, actor_id=aid, exc=e, stage=stage
+        )
+        raise
+
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    ctx = CodeSessionContext(db=db, session=session, job=job, actor_id=aid, revision_round=rnd)
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_initial_request(session, job, rnd, actor_id=aid)
+
+    try:
+        adapter.run_initial_request(req, context=ctx)
+    except FrameworkScanError:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except ChangePlanRejected:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineConfigurationError:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except (PatchRejected, WorkspaceApplyRejected):
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineTimeoutError:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineRepoAccessError:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineMalformedOutputError:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except EngineAdapterError:
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        session.current_round_number = max(session.current_round_number, rnd.round_number)
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+
+    db.refresh(job)
+    reconcile_job_for_session_approve(db, job)
+    sync_session_status_from_job(session, job)
+    db.flush()
+
+    if isinstance(job.change_plan_json, dict) and job.change_plan_json:
+        record_plan_version(
+            db, session=session, revision_round=rnd, plan_json=dict(job.change_plan_json), created_by=aid
+        )
+    if isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
+        record_patch_version(
+            db,
+            session=session,
+            revision_round=rnd,
+            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
+            created_by=aid,
+        )
+    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
+        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
+
+    sync_session_status_from_job(session, job)
+    rnd.status = (
+        AutomationRevisionRoundStatus.COMPLETED.value
+        if job.status != AutomationJobStatus.FAILED.value
+        else AutomationRevisionRoundStatus.FAILED.value
+    )
+    session.current_round_number = rnd.round_number
+    db.flush()
+
+
+def execute_revision_automation_round(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    round_id: uuid.UUID,
+) -> None:
+    """Heavy revision round: bootstrap, engine, material-change gate, patch, execution."""
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+    rnd = db.get(AutomationRevisionRound, round_id)
+    if rnd is None or rnd.automation_session_id != session.id:
+        raise ValueError("round_not_found")
+    rr = db.scalar(
+        select(AutomationReviewRequest)
+        .where(AutomationReviewRequest.revision_round_id == rnd.id)
+        .order_by(AutomationReviewRequest.created_at.desc())
+        .limit(1)
+    )
+    if rr is None:
+        raise ValueError("review_request_not_found")
+
+    actor_id = rnd.started_by
+    instruction_text = (rnd.instruction_text or "").strip()
+    target_scope = rnd.target_scope
+    _mark_round_in_progress(
+        db, session=session, rnd=rnd, actor_id=actor_id, step_name="automation_session_revision"
+    )
+    _restore_job_status_for_round_execution(job, rnd.trigger_type)
+    db.flush()
+
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_revision_request(
+        session,
+        job,
+        rnd,
+        actor_id=actor_id,
+        instruction_text=instruction_text,
+        target_scope=target_scope,
+    )
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    ctx = CodeSessionContext(
+        db=db,
+        session=session,
+        job=job,
+        actor_id=actor_id,
+        revision_round=rnd,
+    )
+    workspace_root = resolve_revision_workspace_root(job, session.repo_path)
+    scoped_paths = resolve_revision_scoped_paths(job, target_scope)
+    try:
+        _run_repo_bootstrap_for_session(
+            db,
+            session=session,
+            job=job,
+            actor_id=actor_id,
+            workspace_profile=resolve_workspace_bootstrap_profile(
+                session, job, prep=None, settings=get_settings()
+            ),
+            prep_mode=None,
+        )
+        before_snapshot = capture_workspace_snapshot(workspace_root, scoped_paths)
+        adapter.run_revision_request(req, context=ctx)
+        after_snapshot = capture_workspace_snapshot(workspace_root, scoped_paths)
+        require_material_workspace_change(
+            workspace_root,
+            before=before_snapshot,
+            after=after_snapshot,
+        )
+    except (
+        RepoBootstrapError,
+        HostedExecutionPreparationError,
+        EngineConfigurationError,
+        EngineTimeoutError,
+        EngineRepoAccessError,
+        EngineMalformedOutputError,
+        EngineAdapterError,
+    ):
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except (PatchRejected, WorkspaceApplyRejected):
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except RevisionNoMaterialChangeError as e:
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = AutomationRevisionRoundStatus.FAILED.value
+        db.refresh(job)
+        job.blocked_reason = e.message[:2048]
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_PATCH_VALIDATION_FAILED.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=actor_id[:256],
+            workflow_run_id=session.workflow_run_id,
+            step_name="automation_session_revision_material_change",
+            entity_type="automation_revision_round",
+            entity_id=str(rnd.id),
+            payload={**e.result.to_audit_payload(), "code": e.code},
+        )
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+
+    db.refresh(job)
+    reconcile_job_for_session_approve(db, job)
+    rr.status = AutomationReviewRequestStatus.APPLIED.value
+    rnd.status = (
+        AutomationRevisionRoundStatus.COMPLETED.value
+        if job.status == AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value
+        else AutomationRevisionRoundStatus.FAILED.value
+    )
+    session.current_round_number = rnd.round_number
+
+    if isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
+        record_patch_version(
+            db,
+            session=session,
+            revision_round=rnd,
+            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
+            created_by=actor_id[:256],
+        )
+    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
+        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
+
+    sync_session_status_from_job(session, job)
+    db.flush()
 
 
 def _run_repo_bootstrap_for_session(
@@ -257,6 +605,7 @@ def _map_job_status_to_session(job_status: str) -> AutomationSessionStatus:
     j = AutomationJobStatus
     m: dict[str, AutomationSessionStatus] = {
         j.PENDING.value: AutomationSessionStatus.PENDING,
+        j.QUEUED.value: AutomationSessionStatus.PLANNING,
         j.SCANNING_FRAMEWORK.value: AutomationSessionStatus.PLANNING,
         j.COLLECTING_CONTEXT.value: AutomationSessionStatus.PLANNING,
         j.PLANNING_CHANGES.value: AutomationSessionStatus.PLANNING,
@@ -660,7 +1009,8 @@ def start_automation_session(
     *,
     actor_id: str | None = None,
     repository_connection_id: uuid.UUID | None = None,
-) -> AutomationSession:
+) -> SessionOperationResult:
+    """Enqueue (and optionally inline-run) the initial automation round."""
     session = db.get(AutomationSession, session_id)
     if session is None:
         raise ValueError("session_not_found")
@@ -671,6 +1021,8 @@ def start_automation_session(
         raise ValueError("job_not_found")
     if session.current_round_number > 0:
         raise ValueError("session_already_started")
+    if session_has_active_round(db, session.id):
+        raise ValueError("session_round_in_progress")
     if job.status != AutomationJobStatus.PENDING.value:
         raise ValueError("job_not_pending")
 
@@ -678,43 +1030,14 @@ def start_automation_session(
     if not aid:
         raise ValueError("actor_missing")
 
+    if repository_connection_id is not None:
+        session.repository_connection_id = repository_connection_id
+
     logger.info(
-        "automation_session_start_entered",
+        "automation_session_start_enqueued",
         extra={"automation_session_id": str(session.id), "automation_job_id": str(job.id)},
     )
-    try:
-        prep = prepare_automation_session_workspace(
-            db,
-            session=session,
-            job=job,
-            repository_connection_id=repository_connection_id,
-            settings=get_settings(),
-        )
-        record_workspace_cache_after_hosted_materialize(
-            db,
-            session=session,
-            job=job,
-            prep=prep,
-            repository_connection_id=repository_connection_id,
-            settings=get_settings(),
-        )
-        profile = resolve_workspace_bootstrap_profile(session, job, prep=prep, settings=get_settings())
-        _run_repo_bootstrap_for_session(
-            db,
-            session=session,
-            job=job,
-            actor_id=aid,
-            workspace_profile=profile,
-            prep_mode=prep.mode,
-        )
-    except (RepoAuthError, RepoWorkspaceError, RepoBootstrapError, HostedExecutionPreparationError) as e:
-        stage = _session_start_pre_round_failure_stage(e)
-        _persist_session_start_pre_round_failure(
-            db, session=session, job=job, actor_id=aid, exc=e, stage=stage
-        )
-        raise
 
-    adapter = resolve_coding_agent_adapter(session.coding_engine)
     rnd = AutomationRevisionRound(
         automation_session_id=session.id,
         round_number=1,
@@ -722,14 +1045,16 @@ def start_automation_session(
         trigger_type=AutomationRevisionRoundTrigger.INITIAL.value,
         instruction_text=None,
         target_scope=None,
-        status="in_progress",
+        status=AutomationRevisionRoundStatus.QUEUED.value,
     )
     db.add(rnd)
+    job.status = AutomationJobStatus.QUEUED.value
+    sync_session_status_from_job(session, job)
     db.flush()
 
     audit_service.write_audit(
         db,
-        event_type=AuditEventType.AUTOMATION_ROUND_STARTED.value,
+        event_type=AuditEventType.AUTOMATION_ROUND_QUEUED.value,
         actor_type=ActorType.USER.value,
         actor_id=aid[:256],
         workflow_run_id=session.workflow_run_id,
@@ -740,95 +1065,14 @@ def start_automation_session(
     )
     db.flush()
 
-    ctx = CodeSessionContext(db=db, session=session, job=job, actor_id=aid, revision_round=rnd)
-    builder = AutomationEnginePayloadBuilder()
-    req = builder.build_initial_request(session, job, rnd, actor_id=aid)
-
-    try:
-        adapter.run_initial_request(req, context=ctx)
-    except FrameworkScanError:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except ChangePlanRejected:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except EngineConfigurationError:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except (PatchRejected, WorkspaceApplyRejected):
-        rnd.status = "failed"
-        session.current_round_number = 1
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except EngineTimeoutError:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except EngineRepoAccessError:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except EngineMalformedOutputError:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except EngineAdapterError:
-        rnd.status = "failed"
-        session.current_round_number = 1
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-
+    maybe_run_round_inline(
+        db,
+        rnd.id,
+        repository_connection_id=repository_connection_id or session.repository_connection_id,
+    )
+    db.refresh(session)
     db.refresh(job)
-
-    reconcile_job_for_session_approve(db, job)
-    sync_session_status_from_job(session, job)
-    db.flush()
-
-    if isinstance(job.change_plan_json, dict) and job.change_plan_json:
-        record_plan_version(
-            db, session=session, revision_round=rnd, plan_json=dict(job.change_plan_json), created_by=aid
-        )
-    if isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
-        record_patch_version(
-            db,
-            session=session,
-            revision_round=rnd,
-            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
-            created_by=aid,
-        )
-    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
-        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
-
-    sync_session_status_from_job(session, job)
-    rnd.status = "completed" if job.status != AutomationJobStatus.FAILED.value else "failed"
-    session.current_round_number = 1
-    db.flush()
-
-    return session
-
+    return SessionOperationResult(session=session, accepted_async=_operation_accepted_async())
 
 
 def request_session_revision(
@@ -838,23 +1082,35 @@ def request_session_revision(
     actor_id: str,
     instruction_text: str,
     target_scope: str | None,
-) -> AutomationSession:
+) -> SessionOperationResult:
+    """Enqueue (and optionally inline-run) a review revision round."""
     session = db.get(AutomationSession, session_id)
     if session is None:
         raise ValueError("session_not_found")
     job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
     if job is None:
         raise ValueError("job_not_found")
+    if job.status != AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value:
+        raise ValueError("review_wrong_state")
+    if session_has_active_round(db, session.id):
+        raise ValueError("revision_in_progress")
+
+    inst = instruction_text.strip()
+    if not inst:
+        raise ValueError("revision_instruction_missing")
+    aid = actor_id.strip()
+    if not aid:
+        raise ValueError("review_actor_missing")
 
     next_n = session.current_round_number + 1
     rnd = AutomationRevisionRound(
         automation_session_id=session.id,
         round_number=next_n,
-        started_by=actor_id.strip()[:256],
+        started_by=aid[:256],
         trigger_type=AutomationRevisionRoundTrigger.REVIEW_REVISION.value,
-        instruction_text=instruction_text.strip()[:20000],
+        instruction_text=inst[:20000],
         target_scope=(target_scope.strip()[:512] if target_scope else None),
-        status="in_progress",
+        status=AutomationRevisionRoundStatus.QUEUED.value,
     )
     db.add(rnd)
     db.flush()
@@ -862,20 +1118,22 @@ def request_session_revision(
     rr = AutomationReviewRequest(
         automation_session_id=session.id,
         revision_round_id=rnd.id,
-        actor_id=actor_id.strip()[:256],
-        instruction_text=instruction_text.strip()[:20000],
+        actor_id=aid[:256],
+        instruction_text=inst[:20000],
         target_scope=(target_scope.strip()[:512] if target_scope else None),
         action_type=AutomationReviewRequestAction.REQUEST_REVISION.value,
         status=AutomationReviewRequestStatus.RECORDED.value,
     )
     db.add(rr)
+    job.status = AutomationJobStatus.QUEUED.value
+    sync_session_status_from_job(session, job)
     db.flush()
 
     audit_service.write_audit(
         db,
         event_type=AuditEventType.AUTOMATION_REVIEW_REQUEST_RECORDED.value,
         actor_type=ActorType.USER.value,
-        actor_id=actor_id.strip()[:256],
+        actor_id=aid[:256],
         workflow_run_id=session.workflow_run_id,
         step_name="automation_session_revision",
         entity_type="automation_review_request",
@@ -884,9 +1142,9 @@ def request_session_revision(
     )
     audit_service.write_audit(
         db,
-        event_type=AuditEventType.AUTOMATION_ROUND_STARTED.value,
+        event_type=AuditEventType.AUTOMATION_ROUND_QUEUED.value,
         actor_type=ActorType.USER.value,
-        actor_id=actor_id.strip()[:256],
+        actor_id=aid[:256],
         workflow_run_id=session.workflow_run_id,
         step_name="automation_session_revision",
         entity_type="automation_revision_round",
@@ -895,108 +1153,10 @@ def request_session_revision(
     )
     db.flush()
 
-    builder = AutomationEnginePayloadBuilder()
-    req = builder.build_revision_request(
-        session,
-        job,
-        rnd,
-        actor_id=actor_id.strip(),
-        instruction_text=instruction_text,
-        target_scope=target_scope,
-    )
-    adapter = resolve_coding_agent_adapter(session.coding_engine)
-    ctx = CodeSessionContext(
-        db=db,
-        session=session,
-        job=job,
-        actor_id=actor_id.strip(),
-        revision_round=rnd,
-    )
-    workspace_root = resolve_revision_workspace_root(job, session.repo_path)
-    scoped_paths = resolve_revision_scoped_paths(job, target_scope)
-    try:
-        _run_repo_bootstrap_for_session(
-            db,
-            session=session,
-            job=job,
-            actor_id=actor_id.strip(),
-            workspace_profile=resolve_workspace_bootstrap_profile(
-                session, job, prep=None, settings=get_settings()
-            ),
-            prep_mode=None,
-        )
-        before_snapshot = capture_workspace_snapshot(workspace_root, scoped_paths)
-        adapter.run_revision_request(req, context=ctx)
-        after_snapshot = capture_workspace_snapshot(workspace_root, scoped_paths)
-        require_material_workspace_change(
-            workspace_root,
-            before=before_snapshot,
-            after=after_snapshot,
-        )
-    except (
-        RepoBootstrapError,
-        HostedExecutionPreparationError,
-        EngineConfigurationError,
-        EngineTimeoutError,
-        EngineRepoAccessError,
-        EngineMalformedOutputError,
-        EngineAdapterError,
-    ):
-        rr.status = AutomationReviewRequestStatus.FAILED.value
-        rnd.status = "failed"
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except (PatchRejected, WorkspaceApplyRejected):
-        rr.status = AutomationReviewRequestStatus.FAILED.value
-        rnd.status = "failed"
-        db.refresh(job)
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-    except RevisionNoMaterialChangeError as e:
-        rr.status = AutomationReviewRequestStatus.FAILED.value
-        rnd.status = "failed"
-        db.refresh(job)
-        job.blocked_reason = e.message[:2048]
-        audit_service.write_audit(
-            db,
-            event_type=AuditEventType.AUTOMATION_PATCH_VALIDATION_FAILED.value,
-            actor_type=ActorType.SYSTEM.value,
-            actor_id=actor_id.strip()[:256],
-            workflow_run_id=session.workflow_run_id,
-            step_name="automation_session_revision_material_change",
-            entity_type="automation_revision_round",
-            entity_id=str(rnd.id),
-            payload={**e.result.to_audit_payload(), "code": e.code},
-        )
-        sync_session_status_from_job(session, job)
-        db.flush()
-        raise
-
+    maybe_run_round_inline(db, rnd.id)
+    db.refresh(session)
     db.refresh(job)
-
-    reconcile_job_for_session_approve(db, job)
-
-    rr.status = AutomationReviewRequestStatus.APPLIED.value
-    rnd.status = "completed" if job.status == AutomationJobStatus.AWAITING_AUTOMATION_REVIEW.value else "failed"
-    session.current_round_number = next_n
-
-    if isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
-        record_patch_version(
-            db,
-            session=session,
-            revision_round=rnd,
-            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
-            created_by=actor_id.strip()[:256],
-        )
-    if isinstance(job.execution_result_json, dict) and job.execution_result_json:
-        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
-
-    sync_session_status_from_job(session, job)
-    db.flush()
-    return session
+    return SessionOperationResult(session=session, accepted_async=_operation_accepted_async())
 
 
 def acknowledge_session_manual_edit(

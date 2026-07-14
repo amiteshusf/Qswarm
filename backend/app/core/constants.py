@@ -100,6 +100,7 @@ class AuditEventType(StrEnum):
     AUTOMATION_SESSION_CREATED = "automation_session_created"
     AUTOMATION_SESSION_START_PRE_ROUND_FAILED = "automation_session_start_pre_round_failed"
     AUTOMATION_ROUND_STARTED = "automation_round_started"
+    AUTOMATION_ROUND_QUEUED = "automation_round_queued"
     AUTOMATION_REPO_BOOTSTRAP_STARTED = "automation_repo_bootstrap_started"
     AUTOMATION_REPO_BOOTSTRAP = "automation_repo_bootstrap"
     AUTOMATION_PLAN_VERSION_CREATED = "automation_plan_version_created"
@@ -168,6 +169,13 @@ class AutomationSessionStatus(StrEnum):
     FAILED = "failed"
 
 
+class AutomationRevisionRoundStatus(StrEnum):
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class AutomationRevisionRoundTrigger(StrEnum):
     INITIAL = "initial"
     REVIEW_REVISION = "review_revision"
@@ -191,6 +199,7 @@ class AutomationReviewRequestStatus(StrEnum):
 
 class AutomationJobStatus(StrEnum):
     PENDING = "pending"
+    QUEUED = "queued"
     SCANNING_FRAMEWORK = "scanning_framework"
     COLLECTING_CONTEXT = "collecting_context"
     PLANNING_CHANGES = "planning_changes"

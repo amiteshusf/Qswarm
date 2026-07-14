@@ -135,6 +135,14 @@ QSWARM_COPILOT_AGENT_ALLOW_REVISION=true
 QSWARM_COPILOT_AGENT_TIMEOUT_SECONDS=600
 GITHUB_TOKEN=...   # or GH_TOKEN — non-interactive Copilot auth
 ```
+| `QSWARM_AUTOMATION_RUN_WORKER_INLINE` | When `true`, queued session start/revision rounds run in the API process (pytest default). When `false` (Render web), POST `/start` and `/request-revision` return **202** and a background worker must run. |
+| `QSWARM_AUTOMATION_WORKER_POLL_SECONDS` | Poll interval for `python -m app.workers.automation_round_worker` (default **2**) |
+
+**Hosted Render (recommended split):**
+
+- **Web service:** `QSWARM_AUTOMATION_RUN_WORKER_INLINE=false` — API enqueues rounds only (fast 202 responses).
+- **Background worker:** same env + DB URL, start command: `cd backend && python -m app.workers.automation_round_worker`
+
 | `PLAYWRIGHT_EXECUTION_TIMEOUT_SECONDS` | Subprocess timeout for `POST .../execute` (default **120**) |
 | `GITHUB_TOKEN` | PAT for hosted **git clone** on session start (GitHub HTTPS), **`POST /automation/jobs/{id}/create-pr`**, and **session** **`POST /automation/sessions/{id}/create-pr`** (repo scope: contents + pull requests). Repository connections may reference a different env var via **`credential_reference`** when **`auth_type=github_pat_env`**. Never commit real tokens. |
 | `QSWARM_GIT_AUTHOR_NAME` | Commit author **name** for PR creation (`git config user.name` in the repo only; required with **`QSWARM_GIT_AUTHOR_EMAIL`**) |
