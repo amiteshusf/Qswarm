@@ -807,3 +807,97 @@ def test_session_start_bootstrap_failure_audit_records_failure_payload(
     fin = [x for x in logs if x.event_type == AuditEventType.AUTOMATION_REPO_BOOTSTRAP.value]
     assert fin[-1].event_payload_json.get("success") is False
     assert fin[-1].event_payload_json.get("code") == "repo_bootstrap_failed"
+
+
+def _noop_engine_revision_success(self, request, *, context):
+    """Simulate an engine that exits 0 and passes tests without mutating scoped files."""
+    from app.automation_engine.engine_models import EngineResult, EngineResultStatus, EngineTaskType
+    from app.automation_engine.stub_adapter import _assert_request_matches_context
+    from app.services import automation_job_service
+    from app.services.automation_review_service import finalize_post_review_execution
+
+    _assert_request_matches_context(request, context)
+    inst = (request.revision_instruction or "").strip()
+    job = automation_job_service.record_automation_job_revision_request(
+        context.db,
+        context.job.id,
+        actor_id=context.actor_id.strip(),
+        instruction_text=inst,
+    )
+    rex = _stub_execution_run_factory()(job)
+    finalize_post_review_execution(
+        context.db,
+        job,
+        rex,
+        actor_id=context.actor_id.strip(),
+        audit_step="review_revision",
+    )
+    context.db.refresh(job)
+    ex = job.execution_result_json if isinstance(job.execution_result_json, dict) else {}
+    patch = job.generated_patch_json if isinstance(job.generated_patch_json, dict) else {}
+    return EngineResult(
+        engine_name=self.engine_name,
+        task_type=EngineTaskType.REVISION,
+        status=EngineResultStatus.SUCCEEDED if ex.get("success") else EngineResultStatus.FAILED,
+        patch_payload=dict(patch) if patch else None,
+        execution_result=ex if ex else None,
+    )
+
+
+def test_request_revision_rejects_no_material_workspace_change(client, tmp_path: Path, monkeypatch, db_session):
+    from app.automation_engine.stub_adapter import StubCodingAgentAdapter
+
+    data = _create_session(client, tmp_path, case_id="SESS-NOOP-REV")
+    sid = uuid.UUID(data["id"])
+    _patch_playwright_run_for_job_and_review(monkeypatch, _stub_execution_run_factory())
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+
+    monkeypatch.setattr(StubCodingAgentAdapter, "run_revision_request", _noop_engine_revision_success)
+
+    rv = client.post(
+        f"/automation/sessions/{sid}/request-revision",
+        json={
+            "actor_id": "qa.lead",
+            "instruction_text": "already satisfied",
+            "target_scope": "tests/smoke.spec.ts",
+        },
+    )
+    assert rv.status_code == 422, rv.text
+    body = rv.json()
+    assert body["detail"]["code"] == "revision_no_material_change"
+    assert "tests/smoke.spec.ts" in body["detail"]["message"]
+
+    patches = client.get(f"/automation/sessions/{sid}/patch-versions").json()["items"]
+    assert len(patches) == 1
+
+    rounds = client.get(f"/automation/sessions/{sid}/rounds").json()["items"]
+    assert len(rounds) == 2
+    assert rounds[1]["round_number"] == 2
+    assert rounds[1]["status"] == "failed"
+
+    sess = db_session.get(AutomationSession, sid)
+    assert sess.current_round_number == 1
+
+
+def test_request_revision_succeeds_when_scoped_file_changes(client, tmp_path: Path, monkeypatch, db_session):
+    """Stub revision still applies a real workspace change and passes material-change validation."""
+    data = _create_session(client, tmp_path, case_id="SESS-REV-OK")
+    sid = uuid.UUID(data["id"])
+    _patch_playwright_run_for_job_and_review(monkeypatch, _stub_execution_run_factory())
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+
+    rv = client.post(
+        f"/automation/sessions/{sid}/request-revision",
+        json={
+            "actor_id": "qa.lead",
+            "instruction_text": "locator: use data-testid",
+            "target_scope": "tests/smoke.spec.ts",
+        },
+    )
+    assert rv.status_code == 200, rv.text
+
+    patches = client.get(f"/automation/sessions/{sid}/patch-versions").json()["items"]
+    assert len(patches) == 2
+
+    sess = db_session.get(AutomationSession, sid)
+    assert sess.current_round_number == 2

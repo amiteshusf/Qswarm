@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.automation_engine.claude_code_adapter import ClaudeCodeAdapter
+from app.automation_engine.claude_workspace_patch import plan_paths_in_order
 from app.automation_engine.engine_errors import (
     EngineAdapterError,
     EngineConfigurationError,
@@ -316,12 +317,20 @@ def test_session_revision_claude_invokes_subprocess(
     jid = uuid.UUID(r.json()["automation_job_id"])
 
     calls: list[list[str]] = []
+    call_count = {"n": 0}
 
     def run_wrapped(argv, cwd=None, timeout_seconds=None, env=None):
+        call_count["n"] += 1
         calls.append(list(argv))
         j = db_session.get(AutomationJob, jid)
+        root = Path(str(cwd))
         if j and isinstance(j.change_plan_json, dict):
-            _write_plan_files_from_job(j, Path(str(cwd)))
+            _write_plan_files_from_job(j, root)
+            if call_count["n"] > 1:
+                for rel in plan_paths_in_order(j):
+                    p = root / rel
+                    if p.is_file():
+                        p.write_text(p.read_text(encoding="utf-8") + "\n// revision\n", encoding="utf-8")
         return {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timed_out": False}
 
     monkeypatch.setattr("app.automation_engine.claude_code_adapter.run_subprocess_argv", run_wrapped)

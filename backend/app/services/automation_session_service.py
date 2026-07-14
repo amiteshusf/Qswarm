@@ -76,6 +76,13 @@ from app.services.repo_workspace_service import (
     resolve_workspace_bootstrap_profile,
 )
 from app.services.workspace_cache_service import record_workspace_cache_after_hosted_materialize
+from app.services.workspace_material_change_service import (
+    RevisionNoMaterialChangeError,
+    capture_workspace_snapshot,
+    require_material_workspace_change,
+    resolve_revision_scoped_paths,
+    resolve_revision_workspace_root,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -905,6 +912,8 @@ def request_session_revision(
         actor_id=actor_id.strip(),
         revision_round=rnd,
     )
+    workspace_root = resolve_revision_workspace_root(job, session.repo_path)
+    scoped_paths = resolve_revision_scoped_paths(job, target_scope)
     try:
         _run_repo_bootstrap_for_session(
             db,
@@ -916,7 +925,14 @@ def request_session_revision(
             ),
             prep_mode=None,
         )
+        before_snapshot = capture_workspace_snapshot(workspace_root, scoped_paths)
         adapter.run_revision_request(req, context=ctx)
+        after_snapshot = capture_workspace_snapshot(workspace_root, scoped_paths)
+        require_material_workspace_change(
+            workspace_root,
+            before=before_snapshot,
+            after=after_snapshot,
+        )
     except (
         RepoBootstrapError,
         HostedExecutionPreparationError,
@@ -936,6 +952,25 @@ def request_session_revision(
         rr.status = AutomationReviewRequestStatus.FAILED.value
         rnd.status = "failed"
         db.refresh(job)
+        sync_session_status_from_job(session, job)
+        db.flush()
+        raise
+    except RevisionNoMaterialChangeError as e:
+        rr.status = AutomationReviewRequestStatus.FAILED.value
+        rnd.status = "failed"
+        db.refresh(job)
+        job.blocked_reason = e.message[:2048]
+        audit_service.write_audit(
+            db,
+            event_type=AuditEventType.AUTOMATION_PATCH_VALIDATION_FAILED.value,
+            actor_type=ActorType.SYSTEM.value,
+            actor_id=actor_id.strip()[:256],
+            workflow_run_id=session.workflow_run_id,
+            step_name="automation_session_revision_material_change",
+            entity_type="automation_revision_round",
+            entity_id=str(rnd.id),
+            payload={**e.result.to_audit_payload(), "code": e.code},
+        )
         sync_session_status_from_job(session, job)
         db.flush()
         raise

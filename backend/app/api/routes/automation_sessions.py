@@ -37,6 +37,7 @@ from app.schemas.repository_connection import (
 from app.schemas.common import ErrorDetail, ErrorResponse
 from app.services import automation_pr_service, automation_session_service
 from app.services.automation_job_service import ChangePlanRejected, PatchRejected, WorkspaceApplyRejected
+from app.services.workspace_material_change_service import RevisionNoMaterialChangeError
 from app.services.framework_scan_service import FrameworkScanError
 from app.services.framework_runtime_errors import HostedExecutionPreparationError
 from app.services.repo_bootstrap_service import RepoBootstrapError
@@ -411,6 +412,12 @@ def request_revision(session_id: uuid.UUID, body: AutomationSessionRevisionBody,
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=ErrorDetail(code="workspace_apply_failed", message=e.message).model_dump(),
+        ) from e
+    except RevisionNoMaterialChangeError as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ErrorDetail(code=e.code, message=e.message).model_dump(),
         ) from e
     except ValueError as e:
         msg = str(e)
