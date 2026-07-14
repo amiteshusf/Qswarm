@@ -121,9 +121,20 @@ Sprint 1 can still be started explicitly via `POST /workflow/runs` and `POST /wo
 | `QSWARM_CLAUDE_CODE_ALLOW_REVISION` | When `false`, adapter rejects revision requests |
 | `QSWARM_COPILOT_AGENT_ENABLED` | When `true`, session `coding_engine=copilot_agent` may run the Copilot CLI adapter (requires **`QSWARM_COPILOT_AGENT_COMMAND`**) |
 | `QSWARM_COPILOT_AGENT_COMMAND` | Copilot CLI executable (argv0) or absolute path (no shell) |
-| `QSWARM_COPILOT_AGENT_EXTRA_ARGS` | Optional argv tokens (`shlex.split`) before `-p` + prompt |
+| `QSWARM_COPILOT_AGENT_EXTRA_ARGS` | Optional argv tokens (`shlex.split`, POSIX) inserted after `COMMAND` and before `-p` + prompt. **Hosted headless** runs typically need Copilot write approval flags, e.g. `--allow-all-tools --allow-all-paths` (see [Copilot CLI docs](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli)). Each invocation is audited under step `copilot_cli` with `extra_args`, `argv_summary` (prompt omitted), and stdout/stderr tails. |
 | `QSWARM_COPILOT_AGENT_ALLOW_REVISION` | When `false`, adapter rejects revision requests |
 | `QSWARM_COPILOT_AGENT_TIMEOUT_SECONDS` | Subprocess timeout for each Copilot CLI invocation |
+
+**Hosted Render example (`copilot_agent`):**
+
+```bash
+QSWARM_COPILOT_AGENT_ENABLED=true
+QSWARM_COPILOT_AGENT_COMMAND=copilot   # or absolute path to npm-loader.js
+QSWARM_COPILOT_AGENT_EXTRA_ARGS=--allow-all-tools --allow-all-paths
+QSWARM_COPILOT_AGENT_ALLOW_REVISION=true
+QSWARM_COPILOT_AGENT_TIMEOUT_SECONDS=600
+GITHUB_TOKEN=...   # or GH_TOKEN — non-interactive Copilot auth
+```
 | `PLAYWRIGHT_EXECUTION_TIMEOUT_SECONDS` | Subprocess timeout for `POST .../execute` (default **120**) |
 | `GITHUB_TOKEN` | PAT for hosted **git clone** on session start (GitHub HTTPS), **`POST /automation/jobs/{id}/create-pr`**, and **session** **`POST /automation/sessions/{id}/create-pr`** (repo scope: contents + pull requests). Repository connections may reference a different env var via **`credential_reference`** when **`auth_type=github_pat_env`**. Never commit real tokens. |
 | `QSWARM_GIT_AUTHOR_NAME` | Commit author **name** for PR creation (`git config user.name` in the repo only; required with **`QSWARM_GIT_AUTHOR_EMAIL`**) |

@@ -80,7 +80,11 @@ class Settings(BaseSettings):
     qswarm_copilot_agent_extra_args: str = Field(
         default="",
         alias="QSWARM_COPILOT_AGENT_EXTRA_ARGS",
-        description="Extra argv tokens (shlex-split) before the prompt flag, e.g. gh copilot --.",
+        description=(
+            "Extra Copilot CLI argv tokens (POSIX shlex-split) inserted after COMMAND and before "
+            "-p/--prompt + task prompt. Hosted headless runs typically need write approval flags, "
+            "e.g. --allow-all-tools --allow-all-paths (see GitHub Copilot CLI docs)."
+        ),
     )
     qswarm_copilot_agent_allow_revision: bool = Field(
         default=True,

@@ -8,6 +8,7 @@ TODO: swap CLI subprocess internals for Copilot SDK or cloud-agent without chang
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import shutil
 from pathlib import Path
@@ -37,10 +38,17 @@ from app.automation_engine.engine_models import (
 )
 from app.automation_engine.types import CodeSessionContext
 from app.core.config import Settings, get_settings
+from app.core.constants import ActorType, AuditEventType
 from app.db.models.automation_job import AutomationJob
-from app.services import automation_job_service
+from app.services import audit_service, automation_job_service
 from app.services.automation_review_service import apply_review_revision_with_external_patch
 from app.services.framework_scan_service import FrameworkScanError, resolve_repo_path
+
+logger = logging.getLogger(__name__)
+
+_COPILOT_PROMPT_FLAGS = frozenset({"-p", "--print", "--prompt"})
+_STDOUT_TAIL_MAX = 8000
+_STDERR_TAIL_MAX = 8000
 
 
 def _assert_request_matches_context(request: EngineRequest, ctx: CodeSessionContext) -> None:
@@ -84,12 +92,169 @@ def _resolve_cli_executable(settings: Settings) -> str:
     )
 
 
-def _build_argv(settings: Settings, prompt: str) -> list[str]:
+def parse_copilot_extra_args(extra_args: str | None) -> list[str]:
+    """POSIX ``shlex.split`` of ``QSWARM_COPILOT_AGENT_EXTRA_ARGS`` (empty → no tokens)."""
+    raw = (extra_args or "").strip()
+    if not raw:
+        return []
+    return shlex.split(raw, posix=True)
+
+
+def build_copilot_cli_argv(settings: Settings, prompt: str) -> tuple[list[str], dict[str, Any]]:
+    """
+    Build Copilot subprocess argv: ``COMMAND + EXTRA_ARGS + (-p|PROMPT_FLAG) + prompt``.
+
+    When EXTRA_ARGS already includes ``-p``, ``--print``, or ``--prompt``, QSwarm appends the
+    task prompt as the final argv element and does not inject another prompt flag.
+    """
     exe = _resolve_cli_executable(settings)
-    extras = shlex.split((settings.qswarm_copilot_agent_extra_args or "").strip())
-    if any(x in ("-p", "--print") for x in extras):
-        return [exe, *extras, prompt]
-    return [exe, *extras, "-p", prompt]
+    extras = parse_copilot_extra_args(settings.qswarm_copilot_agent_extra_args)
+    prompt_flag = next((x for x in extras if x in _COPILOT_PROMPT_FLAGS), None)
+    if prompt_flag is None:
+        prompt_flag = "-p"
+        argv = [exe, *extras, prompt_flag, prompt]
+    else:
+        argv = [exe, *extras, prompt]
+    invocation = {
+        "executable": exe,
+        "extra_args": list(extras),
+        "extra_args_raw": (settings.qswarm_copilot_agent_extra_args or "").strip(),
+        "prompt_flag": prompt_flag,
+        "argv_prefix": [exe, *extras, prompt_flag],
+        "prompt_char_count": len(prompt),
+        "timeout_seconds": int(settings.qswarm_copilot_agent_timeout_seconds),
+    }
+    return argv, invocation
+
+
+def summarize_copilot_argv(argv: list[str]) -> dict[str, Any]:
+    """Safe argv summary for logs/audit — omits the final prompt text when present."""
+    if not argv:
+        return {"argv_prefix": [], "prompt_char_count": 0}
+    last = argv[-1]
+    has_trailing_prompt = (
+        len(argv) >= 2
+        and argv[-2] in _COPILOT_PROMPT_FLAGS
+        and isinstance(last, str)
+        and len(last) > 200
+    )
+    if has_trailing_prompt:
+        return {
+            "argv_prefix": argv[:-1],
+            "prompt_char_count": len(last),
+        }
+    return {"argv_prefix": list(argv), "prompt_char_count": 0}
+
+
+def _build_cli_run_metadata(
+    invocation: dict[str, Any],
+    proc_meta: dict[str, Any],
+    *,
+    cwd: Path,
+) -> dict[str, Any]:
+    stdout = proc_meta.get("stdout") or ""
+    stderr = proc_meta.get("stderr") or ""
+    return {
+        **invocation,
+        "argv_summary": summarize_copilot_argv(
+            [*invocation.get("argv_prefix", []), "<prompt>"]
+            if invocation.get("prompt_char_count")
+            else invocation.get("argv_prefix", [])
+        ),
+        "cwd": str(cwd),
+        "exit_code": proc_meta.get("exit_code"),
+        "duration_ms": proc_meta.get("duration_ms"),
+        "stdout_tail": stdout[-_STDOUT_TAIL_MAX:] if stdout else "",
+        "stderr_tail": stderr[-_STDERR_TAIL_MAX:] if stderr else "",
+        "cli_kind": "copilot_cli",
+    }
+
+
+def _audit_copilot_cli(
+    db: Any,
+    job: AutomationJob,
+    actor_id: str,
+    *,
+    phase: str,
+    task_type: EngineTaskType,
+    payload: dict[str, Any],
+) -> None:
+    if phase == "started":
+        event_type = AuditEventType.AUTOMATION_CODE_GENERATION_STARTED.value
+    elif phase == "completed":
+        event_type = AuditEventType.AUTOMATION_CODE_GENERATED.value
+    else:
+        event_type = AuditEventType.AUTOMATION_PATCH_VALIDATION_FAILED.value
+    audit_service.write_audit(
+        db,
+        event_type=event_type,
+        actor_type=ActorType.SYSTEM.value,
+        actor_id=(actor_id or job.requested_by or "system")[:256],
+        workflow_run_id=job.workflow_run_id,
+        step_name="copilot_cli",
+        entity_type="automation_job",
+        entity_id=str(job.id),
+        payload={"engine": "copilot_agent", "task_type": task_type.value, "phase": phase, **payload},
+    )
+
+
+def _invoke_copilot_cli(
+    db: Any,
+    job: AutomationJob,
+    actor_id: str,
+    settings: Settings,
+    *,
+    root: Path,
+    prompt: str,
+    task_type: EngineTaskType,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    argv, invocation = build_copilot_cli_argv(settings, prompt)
+    start_payload = {
+        **invocation,
+        "argv_summary": summarize_copilot_argv(argv),
+    }
+    logger.info(
+        "copilot_cli_started",
+        extra={
+            "job_id": str(job.id),
+            "task_type": task_type.value,
+            "executable": invocation["executable"],
+            "extra_args": invocation["extra_args"],
+            "prompt_flag": invocation["prompt_flag"],
+            "prompt_char_count": invocation["prompt_char_count"],
+            "timeout_seconds": invocation["timeout_seconds"],
+            "cwd": str(root),
+        },
+    )
+    _audit_copilot_cli(db, job, actor_id, phase="started", task_type=task_type, payload=start_payload)
+    db.flush()
+    try:
+        proc_meta = _run_cli(settings, argv=argv, cwd=root)
+    except (EngineTimeoutError, EngineAdapterError) as exc:
+        fail_payload = {
+            **start_payload,
+            "success": False,
+            "error": getattr(exc, "message", str(exc))[:2000],
+            "error_code": getattr(exc, "code", "engine_adapter_error"),
+        }
+        _audit_copilot_cli(db, job, actor_id, phase="failed", task_type=task_type, payload=fail_payload)
+        db.flush()
+        raise
+    run_metadata = _build_cli_run_metadata(invocation, proc_meta, cwd=root)
+    complete_payload = {**run_metadata, "success": True}
+    logger.info(
+        "copilot_cli_completed",
+        extra={
+            "job_id": str(job.id),
+            "task_type": task_type.value,
+            "exit_code": proc_meta.get("exit_code"),
+            "duration_ms": proc_meta.get("duration_ms"),
+            "extra_args": invocation["extra_args"],
+        },
+    )
+    _audit_copilot_cli(db, job, actor_id, phase="completed", task_type=task_type, payload=complete_payload)
+    db.flush()
+    return proc_meta, run_metadata
 
 
 def _compose_prompt(request: EngineRequest, job: AutomationJob, *, mode: str) -> str:
@@ -277,8 +442,15 @@ class CopilotAgentAdapter(CodingAgentAdapterBase):
 
         plan = dict(job.change_plan_json or {})
         prompt = _compose_prompt(request, job, mode="initial_generation")
-        argv = _build_argv(s, prompt)
-        proc_meta = _run_cli(s, argv=argv, cwd=root)
+        proc_meta, run_metadata = _invoke_copilot_cli(
+            db,
+            job,
+            aid,
+            s,
+            root=root,
+            prompt=prompt,
+            task_type=EngineTaskType.INITIAL_GENERATION,
+        )
 
         try:
             raw_patch = build_full_generation_patch_from_workspace(
@@ -319,14 +491,7 @@ class CopilotAgentAdapter(CodingAgentAdapterBase):
             error_message=None
             if ok
             else (job.blocked_reason or str((ex.get("notes") or [""])[0])),
-            metadata={
-                "argv": argv,
-                "cwd": str(root),
-                "exit_code": proc_meta.get("exit_code"),
-                "duration_ms": proc_meta.get("duration_ms"),
-                "stderr_tail": (proc_meta.get("stderr") or "")[-8000:],
-                "cli_kind": "copilot_local",
-            },
+            metadata=run_metadata,
         )
 
     def run_revision_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
@@ -351,8 +516,15 @@ class CopilotAgentAdapter(CodingAgentAdapterBase):
         db.refresh(job)
 
         prompt = _compose_prompt(request, job, mode="revision")
-        argv = _build_argv(s, prompt)
-        proc_meta = _run_cli(s, argv=argv, cwd=root)
+        proc_meta, run_metadata = _invoke_copilot_cli(
+            db,
+            job,
+            aid,
+            s,
+            root=root,
+            prompt=prompt,
+            task_type=EngineTaskType.REVISION,
+        )
 
         try:
             touched = paths_for_revision_scope(job, request.target_scope)
@@ -393,13 +565,7 @@ class CopilotAgentAdapter(CodingAgentAdapterBase):
             raw_output=(proc_meta.get("stdout") or "")[-200000:] or None,
             error_code=None if ok else "execution_failed",
             error_message=None if ok else (job.blocked_reason or str((ex.get("notes") or [""])[0])),
-            metadata={
-                "argv": argv,
-                "cwd": str(root),
-                "exit_code": proc_meta.get("exit_code"),
-                "duration_ms": proc_meta.get("duration_ms"),
-                "stderr_tail": (proc_meta.get("stderr") or "")[-8000:],
-            },
+            metadata=run_metadata,
         )
 
     def run_manual_rerun_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:

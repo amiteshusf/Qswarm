@@ -376,3 +376,73 @@ def test_legacy_automation_job_start_still_works(client, tmp_path: Path):
     st = client.post(f"/automation/jobs/{jid}/start")
     assert st.status_code == 200, st.text
     assert st.json()["status"] == AutomationJobStatus.PLANNING_CHANGES.value
+
+
+def test_copilot_cli_audit_records_extra_args(
+    client, tmp_path: Path, monkeypatch, db_session, copilot_env
+):
+    from sqlalchemy import select
+
+    from app.core.constants import AuditEventType
+    from app.db.models.audit_log import AuditLog
+
+    monkeypatch.setenv(
+        "QSWARM_COPILOT_AGENT_EXTRA_ARGS",
+        "--allow-all-tools --allow-all-paths",
+    )
+    get_settings.cache_clear()
+
+    _playwright_fixture_repo(tmp_path)
+    monkeypatch.setattr(
+        "app.services.automation_job_service.run_playwright_execution_for_job",
+        _stub_execution_run_factory(),
+    )
+
+    r = client.post(
+        "/automation/sessions",
+        json={
+            "approved_case_id": "COPILOT-AUDIT",
+            "created_by": "runner",
+            "coding_engine": "copilot_agent",
+            "repo_path": str(tmp_path.resolve()),
+            "case_title": "Smoke",
+            "steps": ["open app"],
+        },
+    )
+    sid = uuid.UUID(r.json()["id"])
+    jid = uuid.UUID(r.json()["automation_job_id"])
+    captured_argv: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        captured_argv.append(list(argv))
+        j = db_session.get(AutomationJob, jid)
+        if j and isinstance(j.change_plan_json, dict):
+            _write_plan_files_from_job(j, Path(str(kwargs["cwd"])))
+        return {
+            "exit_code": 0,
+            "stdout": "suggested edit",
+            "stderr": "",
+            "duration_ms": 5,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr("app.automation_engine.copilot_agent_adapter.run_subprocess_argv", fake_run)
+    assert client.post(f"/automation/sessions/{sid}/start", json={}).status_code == 200
+
+    logs = db_session.scalars(
+        select(AuditLog)
+        .where(AuditLog.entity_id == str(jid), AuditLog.step_name == "copilot_cli")
+        .order_by(AuditLog.created_at)
+    ).all()
+    assert len(logs) >= 2
+    started = logs[0]
+    completed = logs[-1]
+    assert started.event_type == AuditEventType.AUTOMATION_CODE_GENERATION_STARTED.value
+    assert completed.event_type == AuditEventType.AUTOMATION_CODE_GENERATED.value
+    assert started.event_payload_json["extra_args"] == ["--allow-all-tools", "--allow-all-paths"]
+    assert completed.event_payload_json["success"] is True
+    assert "--allow-all-tools" in captured_argv[0]
+    assert "--allow-all-paths" in captured_argv[0]
+    assert "argv_summary" in completed.event_payload_json
+    assert completed.event_payload_json.get("stdout_tail")
+    get_settings.cache_clear()
