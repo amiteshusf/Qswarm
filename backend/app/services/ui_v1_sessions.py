@@ -184,6 +184,9 @@ def build_session_detail_json_for_ui(db: Session, session_id: uuid.UUID) -> dict
 
     pr_title: str | None = None
     pr_body: str | None = None
+    pr_external_url: str | None = None
+    pr_external_id: str | None = None
+    pr_status: str | None = None
     latest_summary: str | None = None
     if executions:
         last = executions[-1]
@@ -194,6 +197,9 @@ def build_session_detail_json_for_ui(db: Session, session_id: uuid.UUID) -> dict
         if isinstance(last_pr, dict):
             pr_title = last_pr.get("title") or last_pr.get("pr_title")
             pr_body = last_pr.get("body") or last_pr.get("pr_body")
+            pr_external_url = last_pr.get("external_url")
+            pr_external_id = last_pr.get("external_id")
+            pr_status = last_pr.get("status")
             if isinstance(pr_title, str):
                 pr_title = pr_title[:512]
             if isinstance(pr_body, str):
@@ -218,4 +224,10 @@ def build_session_detail_json_for_ui(db: Session, session_id: uuid.UUID) -> dict
         out["prPreviewTitle"] = pr_title
     if pr_body:
         out["prPreviewBody"] = pr_body
+    if pr_external_url:
+        out["prExternalUrl"] = str(pr_external_url)[:1024]
+    if pr_external_id:
+        out["prExternalId"] = str(pr_external_id)[:256]
+    if pr_status:
+        out["prStatus"] = str(pr_status)[:64]
     return out
