@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import uuid
 from pathlib import Path
@@ -127,6 +128,7 @@ def _build_review_timeline(
     rounds: list[dict[str, Any]],
     reviews: list[dict[str, Any]],
     executions: list[dict[str, Any]],
+    pr_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     round_by_id = _round_number_by_id(rounds)
     items: list[dict[str, Any]] = []
@@ -201,6 +203,21 @@ def _build_review_timeline(
             }
         )
 
+    for pr in pr_items or []:
+        title = _s(pr.get("title"))
+        text = f"Pull request created: {title}" if title else "Pull request created."
+        items.append(
+            {
+                "id": _s(pr.get("id")),
+                "type": "pr_created",
+                "actor": _s(pr.get("created_by"), default="system"),
+                "text": text[:8000],
+                "created_at": pr.get("created_at") or "",
+                "round_number": 0,
+                "status": _map_timeline_status(pr.get("status")),
+            }
+        )
+
     items.sort(key=lambda x: str(x.get("created_at") or ""))
     return items
 
@@ -227,6 +244,60 @@ def _build_pr_info(pr_items: list[dict[str, Any]]) -> dict[str, Any] | None:
     if last.get("external_id"):
         out["external_id"] = str(last["external_id"])[:256]
     return out
+
+
+def _line_change_counts(before: str | None, after: str | None) -> tuple[int, int]:
+    if before is None or after is None:
+        return 0, 0
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    adds = dels = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, before_lines, after_lines).get_opcodes():
+        if tag == "insert":
+            adds += j2 - j1
+        elif tag == "delete":
+            dels += i2 - i1
+        elif tag == "replace":
+            dels += i2 - i1
+            adds += j2 - j1
+    return adds, dels
+
+
+def _unified_diff_text(before: str | None, after: str | None, path: str) -> str | None:
+    if before is None or after is None or before == after:
+        return None
+    lines = difflib.unified_diff(
+        before.splitlines(keepends=True),
+        after.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        lineterm="",
+    )
+    text = "".join(lines)
+    return text[:120_000] if text else None
+
+
+def _finalize_changed_file_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Add UI-friendly aliases and optional diff metadata."""
+    prev = entry.get("previous_content")
+    cur = entry.get("current_content")
+    entry["before_content"] = prev
+    entry["after_content"] = cur
+    adds, dels = _line_change_counts(prev, cur)
+    if adds or dels:
+        entry["additions"] = adds
+        entry["deletions"] = dels
+    diff = _unified_diff_text(prev, cur, str(entry.get("path") or "file"))
+    if diff:
+        entry["unified_diff"] = diff
+    if entry.get("content_changed"):
+        parts = []
+        if adds:
+            parts.append(f"+{adds} lines")
+        if dels:
+            parts.append(f"-{dels} lines")
+        entry["summary"] = ", ".join(parts) if parts else "Content changed"
+    return entry
 
 
 def _build_changed_files(
@@ -285,7 +356,7 @@ def _build_changed_files(
             entry["current_content_truncated"] = True
         if prev_trunc:
             entry["previous_content_truncated"] = True
-        changed.append(entry)
+        changed.append(_finalize_changed_file_entry(entry))
     return changed
 
 
@@ -366,7 +437,9 @@ def build_session_review_data_for_ui(db: Session, session_id: uuid.UUID) -> dict
         "session_id": str(session_id),
         "review_summary": review_summary,
         "changed_files": changed_files,
-        "review_conversation": _build_review_timeline(rounds=rounds, reviews=reviews, executions=executions),
+        "review_conversation": _build_review_timeline(
+            rounds=rounds, reviews=reviews, executions=executions, pr_items=pr_items if isinstance(pr_items, list) else []
+        ),
         "pr_info": _build_pr_info(pr_items if isinstance(pr_items, list) else []),
     }
     return dict_keys_to_camel(payload)

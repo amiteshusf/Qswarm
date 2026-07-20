@@ -135,6 +135,11 @@ def test_review_data_changed_files_with_previous_patch_version(db_session, tmp_p
     assert f["contentChanged"] is True
     assert f["currentContentHash"]
     assert f["previousContentHash"]
+    assert f["beforeContent"] == f["previousContent"]
+    assert f["afterContent"] == f["currentContent"]
+    assert f["additions"] >= 1
+    assert f["unifiedDiff"]
+    assert f["summary"]
 
 
 def test_review_data_first_patch_falls_back_to_base_branch(db_session, tmp_path: Path):
@@ -283,6 +288,11 @@ def test_review_data_pr_info_exposed(db_session, tmp_path: Path):
     assert pr["targetBranch"] == "main"
     assert pr["status"] == "created"
     assert "open_pr" in data["reviewSummary"]["nextActions"]
+
+    conv = data["reviewConversation"]
+    pr_events = [x for x in conv if x["type"] == "pr_created"]
+    assert len(pr_events) == 1
+    assert "Automate login" in pr_events[0]["text"]
 
 
 def test_review_data_api_endpoint(ui_client, tmp_path, monkeypatch):

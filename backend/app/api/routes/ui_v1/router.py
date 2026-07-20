@@ -44,6 +44,7 @@ from app.services.ui_v1_branch_policies import format_branch_policy_json_for_ui
 from app.services.ui_v1_dashboard import build_dashboard_response, format_dashboard_json_for_ui, map_backend_to_ui_dashboard_status
 from app.services.ui_v1_mapper import dict_keys_to_camel
 from app.services.ui_v1_session_review_service import build_session_review_data_for_ui
+from app.services.ui_v1_session_brief_service import build_session_brief_for_ui
 from app.services.ui_v1_sessions import build_session_detail_json_for_ui, format_session_summary_for_ui
 
 router = APIRouter(prefix="/api/v1", tags=["ui-v1"])
@@ -199,6 +200,18 @@ def ui_list_sessions(
 ):
     """Top-level JSON array of ``sessionSummarySchema`` rows (Qswarm-UI)."""
     return _list_session_summaries(db, status=status, limit=limit)
+
+
+@router.get("/sessions/{session_id}/brief", responses={404: {"model": ErrorResponse}})
+def ui_get_session_brief(session_id: uuid.UUID, db: DbSession):
+    """Session brief: source summary, setup, and automation plan preview before/during review."""
+    try:
+        return build_session_brief_for_ui(db, session_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorDetail(code="not_found", message="Automation session not found").model_dump(),
+        ) from None
 
 
 @router.get("/sessions/{session_id}/review-data", responses={404: {"model": ErrorResponse}})
