@@ -234,6 +234,80 @@ class ClaudeCodeAdapter(CodingAgentAdapterBase):
             )
         self.validate_config()
 
+    def run_plan_only_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
+        self._ensure_ready()
+        _assert_request_matches_context(request, context)
+        db, job, aid = context.db, context.job, context.actor_id
+
+        automation_job_service.start_automation_job(db, job.id, actor_id=aid)
+        db.refresh(job)
+        automation_job_service.plan_automation_job_changes(db, job.id, actor_id=aid)
+        db.refresh(job)
+
+        plan = dict(job.change_plan_json or {})
+        return EngineResult(
+            engine_name=self.engine_name,
+            task_type=EngineTaskType.INITIAL_GENERATION,
+            status=EngineResultStatus.SUCCEEDED,
+            plan_summary=_plan_summary(plan),
+            plan_payload=plan or None,
+        )
+
+    def run_execute_after_plan_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
+        self._ensure_ready()
+        _assert_request_matches_context(request, context)
+        db, job, aid = context.db, context.job, context.actor_id
+        s = self._s()
+        root = _workspace_root(job, request)
+        plan = dict(job.change_plan_json or {})
+        prompt = _compose_prompt(request, job, mode="initial_generation")
+        argv = _build_argv(s, prompt)
+        proc_meta = _run_cli(s, argv=argv, cwd=root)
+
+        try:
+            raw_patch = build_full_generation_patch_from_workspace(job, root, engine_run_label="claude_code")
+        except FileNotFoundError as e:
+            raise EngineMalformedOutputError(
+                f"Expected plan file missing on disk after Claude run: {e}",
+                code="engine_malformed_output",
+            ) from e
+        except ValueError as e:
+            raise EngineMalformedOutputError(str(e), code="engine_malformed_output") from e
+
+        automation_job_service.generate_code_from_external_patch(
+            db, job.id, raw_patch, actor_id=aid, provider_label="claude_code"
+        )
+        db.refresh(job)
+        automation_job_service.execute_automation_job(db, job.id, actor_id=aid)
+        db.refresh(job)
+
+        ex = job.execution_result_json if isinstance(job.execution_result_json, dict) else {}
+        cmd = ex.get("command")
+        ok = bool(ex.get("success"))
+        return EngineResult(
+            engine_name=self.engine_name,
+            task_type=EngineTaskType.INITIAL_GENERATION,
+            status=EngineResultStatus.SUCCEEDED if ok else EngineResultStatus.FAILED,
+            plan_summary=_plan_summary(plan),
+            patch_summary=_patch_summary(job.generated_patch_json if isinstance(job.generated_patch_json, dict) else None),
+            plan_payload=plan or None,
+            patch_payload=dict(job.generated_patch_json) if isinstance(job.generated_patch_json, dict) else None,
+            execution_command=cmd if isinstance(cmd, (list, dict)) else None,
+            execution_result=ex if ex else None,
+            raw_output=(proc_meta.get("stdout") or "")[-200000:] or None,
+            error_message=None
+            if ok
+            else (job.blocked_reason or str((ex.get("notes") or [""])[0])),
+            metadata={
+                "argv": argv,
+                "cwd": str(root),
+                "exit_code": proc_meta.get("exit_code"),
+                "duration_ms": proc_meta.get("duration_ms"),
+                "stderr_tail": (proc_meta.get("stderr") or "")[-8000:],
+                "working_mode": s.qswarm_claude_code_working_mode,
+            },
+        )
+
     def run_initial_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
         self._ensure_ready()
         _assert_request_matches_context(request, context)

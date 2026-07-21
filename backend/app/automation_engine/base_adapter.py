@@ -41,3 +41,11 @@ class CodingAgentAdapterBase(ABC):
     @abstractmethod
     def run_manual_rerun_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
         ...
+
+    def run_plan_only_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
+        """Scan repo context and produce a change plan without generating code."""
+        raise NotImplementedError(f"{self.engine_name} does not support plan-only requests")
+
+    def run_execute_after_plan_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
+        """Generate code and execute after a plan has been approved."""
+        raise NotImplementedError(f"{self.engine_name} does not support execute-after-plan requests")

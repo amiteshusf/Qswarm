@@ -66,6 +66,40 @@ class StubCodingAgentAdapter(CodingAgentAdapterBase):
         ctx.db.refresh(ctx.job)
         return PatchResult(patch_json=dict(ctx.job.generated_patch_json or {}))
 
+    def run_plan_only_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
+        _assert_request_matches_context(request, context)
+        db, job, aid = context.db, context.job, context.actor_id
+
+        automation_job_service.start_automation_job(db, job.id, actor_id=aid)
+        db.refresh(job)
+        plan = self.build_plan(context)
+        return EngineResult(
+            engine_name=self.engine_name,
+            task_type=EngineTaskType.INITIAL_GENERATION,
+            status=EngineResultStatus.SUCCEEDED,
+            plan_payload=plan.plan_json,
+        )
+
+    def run_execute_after_plan_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
+        _assert_request_matches_context(request, context)
+        db, job, aid = context.db, context.job, context.actor_id
+
+        patch = self.generate_patch(context)
+        automation_job_service.execute_automation_job(db, job.id, actor_id=aid)
+        db.refresh(job)
+
+        ex = job.execution_result_json if isinstance(job.execution_result_json, dict) else {}
+        cmd = ex.get("command")
+        return EngineResult(
+            engine_name=self.engine_name,
+            task_type=EngineTaskType.INITIAL_GENERATION,
+            status=EngineResultStatus.SUCCEEDED if job.execution_result_json and ex.get("success") else EngineResultStatus.FAILED,
+            patch_payload=patch.patch_json,
+            execution_command=cmd if isinstance(cmd, (list, dict)) else None,
+            execution_result=ex if ex else None,
+            error_message=None if ex.get("success") else (str((ex.get("notes") or [""])[0]) if ex.get("notes") else job.blocked_reason),
+        )
+
     def run_initial_request(self, request: EngineRequest, *, context: CodeSessionContext) -> EngineResult:
         _assert_request_matches_context(request, context)
         db, job, aid = context.db, context.job, context.actor_id

@@ -22,6 +22,7 @@ from app.schemas.automation_session import (
     AutomationSessionApproveBody,
     AutomationSessionCreateRequest,
     AutomationSessionManualAckBody,
+    AutomationSessionPlanRevisionBody,
     AutomationSessionRevisionBody,
     AutomationSessionSimpleResponse,
     AutomationSessionStartRequest,
@@ -202,6 +203,148 @@ def list_review_requests(session_id: uuid.UUID, db: DbSession):
 
 
 @router.post(
+    "/{session_id}/prepare-plan",
+    response_model=AutomationSessionStartResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+def prepare_session_plan(
+    session_id: uuid.UUID,
+    db: DbSession,
+    body: AutomationSessionStartRequest | None = None,
+):
+    if automation_session_service.get_session(db, session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorDetail(code="not_found", message="Automation session not found").model_dump(),
+        )
+    actor = (body.actor_id if body else None) or None
+    repo_conn = body.repository_connection_id if body else None
+    try:
+        sess = automation_session_service.prepare_automation_session_plan(
+            db, session_id, actor_id=actor, repository_connection_id=repo_conn
+        )
+    except (RepoAuthError, RepoWorkspaceError, RepoBootstrapError, HostedExecutionPreparationError) as e:
+        db.commit()
+        code = status.HTTP_401_UNAUTHORIZED if isinstance(e, RepoAuthError) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(
+            status_code=code,
+            detail=ErrorDetail(code=getattr(e, "code", "prepare_plan_failed"), message=str(e)).model_dump(),
+        ) from e
+    except FrameworkScanError as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorDetail(code=e.code, message=e.message).model_dump(),
+        ) from e
+    except ChangePlanRejected as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ErrorDetail(code="invalid_change_plan", message=e.message).model_dump(),
+        ) from e
+    except ValueError as e:
+        msg = str(e)
+        if msg in ("session_already_started", "job_not_pending"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ErrorDetail(code=msg, message=msg.replace("_", " ")).model_dump(),
+            ) from e
+        raise
+    db.commit()
+    db.refresh(sess)
+    summ = automation_session_service.session_to_summary(db, sess)
+    return AutomationSessionStartResponse(
+        id=str(sess.id),
+        status=summ["status"],
+        job_status=summ.get("job_status"),
+        message="Automation plan is ready for review.",
+    )
+
+
+@router.post(
+    "/{session_id}/approve-plan",
+    response_model=AutomationSessionSimpleResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+def approve_session_plan(session_id: uuid.UUID, body: AutomationSessionApproveBody, db: DbSession):
+    if automation_session_service.get_session(db, session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorDetail(code="not_found", message="Automation session not found").model_dump(),
+        )
+    try:
+        sess = automation_session_service.approve_automation_session_plan(
+            db, session_id, actor_id=body.actor_id
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg == "plan_not_ready":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ErrorDetail(code="invalid_state", message="Session plan is not ready for approval").model_dump(),
+            ) from e
+        raise
+    db.commit()
+    db.refresh(sess)
+    summ = automation_session_service.session_to_summary(db, sess)
+    return AutomationSessionSimpleResponse(
+        id=str(sess.id),
+        status=summ["status"],
+        job_status=summ.get("job_status"),
+        message="Plan approved. You can now run automation.",
+    )
+
+
+@router.post(
+    "/{session_id}/request-plan-revision",
+    response_model=AutomationSessionSimpleResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+def request_session_plan_revision(session_id: uuid.UUID, body: AutomationSessionPlanRevisionBody, db: DbSession):
+    if automation_session_service.get_session(db, session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorDetail(code="not_found", message="Automation session not found").model_dump(),
+        )
+    try:
+        sess = automation_session_service.request_session_plan_revision(
+            db,
+            session_id,
+            actor_id=body.actor_id,
+            instruction_text=body.instruction_text,
+        )
+    except ChangePlanRejected as e:
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ErrorDetail(code="invalid_change_plan", message=e.message).model_dump(),
+        ) from e
+    except ValueError as e:
+        msg = str(e)
+        if msg == "plan_not_ready":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ErrorDetail(code="invalid_state", message="Session plan is not ready for revision").model_dump(),
+            ) from e
+        raise
+    db.commit()
+    db.refresh(sess)
+    summ = automation_session_service.session_to_summary(db, sess)
+    return AutomationSessionSimpleResponse(
+        id=str(sess.id),
+        status=summ["status"],
+        job_status=summ.get("job_status"),
+        message="Plan revision recorded. Review the updated plan.",
+    )
+
+
+@router.post(
     "/{session_id}/start",
     response_model=AutomationSessionStartResponse,
     responses={
@@ -318,6 +461,14 @@ def start_session(
                 detail=ErrorDetail(
                     code="invalid_state",
                     message="Backing automation job is not in pending status",
+                ).model_dump(),
+            ) from e
+        if msg == "plan_not_approved":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ErrorDetail(
+                    code="plan_not_approved",
+                    message="Approve the automation plan before running execution",
                 ).model_dump(),
             ) from e
         if msg == "actor_missing":

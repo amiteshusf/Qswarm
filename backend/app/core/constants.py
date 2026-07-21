@@ -157,6 +157,7 @@ class AutomationSessionStatus(StrEnum):
     """Control-plane session status (maps from underlying AutomationJob status)."""
 
     PENDING = "pending"
+    PLAN_READY = "plan_ready"
     PLANNING = "planning"
     GENERATING = "generating"
     EXECUTING = "executing"
@@ -177,8 +178,10 @@ class AutomationRevisionRoundTrigger(StrEnum):
 
 class AutomationReviewRequestAction(StrEnum):
     REQUEST_REVISION = "request_revision"
+    REQUEST_PLAN_REVISION = "request_plan_revision"
     MANUAL_EDIT_ACK = "manual_edit_ack"
     APPROVE = "approve"
+    APPROVE_PLAN = "approve_plan"
     REJECT = "reject"
     RERUN = "rerun"
 
@@ -194,6 +197,7 @@ class AutomationJobStatus(StrEnum):
     SCANNING_FRAMEWORK = "scanning_framework"
     COLLECTING_CONTEXT = "collecting_context"
     PLANNING_CHANGES = "planning_changes"
+    AWAITING_PLAN_APPROVAL = "awaiting_plan_approval"
     GENERATING_CODE = "generating_code"
     APPLYING_CHANGES = "applying_changes"
     EXECUTING = "executing"

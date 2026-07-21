@@ -23,6 +23,7 @@ from app.services import automation_session_service
 # Keys match the frontend Zod ``sessionCounts`` record (underscore slugs, not camelCase keys).
 UI_SESSION_COUNT_KEYS: tuple[str, ...] = (
     "draft",
+    "plan_ready",
     "queued",
     "running",
     "awaiting_review",
@@ -66,6 +67,8 @@ def map_backend_to_ui_dashboard_status(summary: dict[str, Any]) -> str:
         "awaiting_automation_approval",
     ):
         return "awaiting_review"
+    if eff == "plan_ready" or job == "awaiting_plan_approval":
+        return "plan_ready"
     if eff in ("planning", "generating", "executing"):
         return "running"
     if eff == "pending":

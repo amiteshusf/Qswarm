@@ -86,6 +86,11 @@ class AutomationSessionApproveBody(BaseModel):
     actor_id: str = Field(..., min_length=1, max_length=256)
 
 
+class AutomationSessionPlanRevisionBody(BaseModel):
+    actor_id: str = Field(..., min_length=1, max_length=256)
+    instruction_text: str = Field(..., min_length=1, max_length=20000)
+
+
 class AutomationSessionSimpleResponse(BaseModel):
     id: str
     status: str

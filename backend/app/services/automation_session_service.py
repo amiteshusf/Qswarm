@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -216,6 +217,7 @@ def _map_job_status_to_session(job_status: str) -> AutomationSessionStatus:
         j.SCANNING_FRAMEWORK.value: AutomationSessionStatus.PLANNING,
         j.COLLECTING_CONTEXT.value: AutomationSessionStatus.PLANNING,
         j.PLANNING_CHANGES.value: AutomationSessionStatus.PLANNING,
+        j.AWAITING_PLAN_APPROVAL.value: AutomationSessionStatus.PLAN_READY,
         j.GENERATING_CODE.value: AutomationSessionStatus.GENERATING,
         j.APPLYING_CHANGES.value: AutomationSessionStatus.GENERATING,
         j.EXECUTING.value: AutomationSessionStatus.EXECUTING,
@@ -607,33 +609,32 @@ def session_to_summary(db: Session, session: AutomationSession) -> dict[str, Any
         "created_at": session.created_at.isoformat() if session.created_at else None,
         "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         "job_status": job.status if job else None,
+        "plan_approved_at": session.plan_approved_at.isoformat() if session.plan_approved_at else None,
     }
 
 
-def start_automation_session(
+def _get_initial_round_in_progress(db: Session, session_id: uuid.UUID) -> AutomationRevisionRound | None:
+    return db.scalar(
+        select(AutomationRevisionRound)
+        .where(
+            AutomationRevisionRound.automation_session_id == session_id,
+            AutomationRevisionRound.round_number == 1,
+            AutomationRevisionRound.trigger_type == AutomationRevisionRoundTrigger.INITIAL.value,
+            AutomationRevisionRound.status == "in_progress",
+        )
+        .limit(1)
+    )
+
+
+def _prepare_session_workspace_for_start(
     db: Session,
-    session_id: uuid.UUID,
     *,
-    actor_id: str | None = None,
-    repository_connection_id: uuid.UUID | None = None,
-) -> AutomationSession:
-    session = db.get(AutomationSession, session_id)
-    if session is None:
-        raise ValueError("session_not_found")
-    if not session.automation_job_id:
-        raise ValueError("session_missing_job")
-    job = db.get(AutomationJob, session.automation_job_id)
-    if job is None:
-        raise ValueError("job_not_found")
-    if session.current_round_number > 0:
-        raise ValueError("session_already_started")
-    if job.status != AutomationJobStatus.PENDING.value:
-        raise ValueError("job_not_pending")
-
-    aid = (actor_id or session.created_by or "").strip()
-    if not aid:
-        raise ValueError("actor_missing")
-
+    session: AutomationSession,
+    job: AutomationJob,
+    actor_id: str,
+    repository_connection_id: uuid.UUID | None,
+) -> None:
+    aid = actor_id
     try:
         prep = prepare_automation_session_workspace(
             db,
@@ -665,6 +666,370 @@ def start_automation_session(
             db, session=session, job=job, actor_id=aid, exc=e, stage=stage
         )
         raise
+
+
+def _record_round_artifacts(
+    db: Session,
+    *,
+    session: AutomationSession,
+    job: AutomationJob,
+    rnd: AutomationRevisionRound,
+    actor_id: str,
+    include_plan: bool = True,
+    include_patch: bool = True,
+    include_execution: bool = True,
+) -> None:
+    aid = actor_id
+    if include_plan and isinstance(job.change_plan_json, dict) and job.change_plan_json:
+        record_plan_version(
+            db, session=session, revision_round=rnd, plan_json=dict(job.change_plan_json), created_by=aid
+        )
+    if include_patch and isinstance(job.generated_patch_json, dict) and job.generated_patch_json:
+        record_patch_version(
+            db,
+            session=session,
+            revision_round=rnd,
+            patch_json=_hydrate_patch_json_for_version_storage(job, dict(job.generated_patch_json)),
+            created_by=aid,
+        )
+    if include_execution and isinstance(job.execution_result_json, dict) and job.execution_result_json:
+        record_execution_attempt(db, session=session, revision_round=rnd, job=job)
+
+
+def _handle_initial_engine_errors(
+    db: Session,
+    *,
+    session: AutomationSession,
+    job: AutomationJob,
+    rnd: AutomationRevisionRound,
+) -> None:
+    rnd.status = "failed"
+    session.current_round_number = max(session.current_round_number, 1)
+    db.refresh(job)
+    sync_session_status_from_job(session, job)
+    db.flush()
+
+
+def prepare_automation_session_plan(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str | None = None,
+    repository_connection_id: uuid.UUID | None = None,
+) -> AutomationSession:
+    """Workspace prep + change planning; pauses at plan approval before code generation."""
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    if not session.automation_job_id:
+        raise ValueError("session_missing_job")
+    job = db.get(AutomationJob, session.automation_job_id)
+    if job is None:
+        raise ValueError("job_not_found")
+
+    if job.status == AutomationJobStatus.AWAITING_PLAN_APPROVAL.value:
+        sync_session_status_from_job(session, job)
+        return session
+
+    if session.current_round_number > 0:
+        raise ValueError("session_already_started")
+    if job.status != AutomationJobStatus.PENDING.value:
+        raise ValueError("job_not_pending")
+
+    aid = (actor_id or session.created_by or "").strip()
+    if not aid:
+        raise ValueError("actor_missing")
+
+    _prepare_session_workspace_for_start(
+        db,
+        session=session,
+        job=job,
+        actor_id=aid,
+        repository_connection_id=repository_connection_id,
+    )
+
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    rnd = AutomationRevisionRound(
+        automation_session_id=session.id,
+        round_number=1,
+        started_by=aid[:256],
+        trigger_type=AutomationRevisionRoundTrigger.INITIAL.value,
+        instruction_text=None,
+        target_scope=None,
+        status="in_progress",
+    )
+    db.add(rnd)
+    db.flush()
+
+    audit_service.write_audit(
+        db,
+        event_type=AuditEventType.AUTOMATION_ROUND_STARTED.value,
+        actor_type=ActorType.USER.value,
+        actor_id=aid[:256],
+        workflow_run_id=session.workflow_run_id,
+        step_name="automation_session_prepare_plan",
+        entity_type="automation_revision_round",
+        entity_id=str(rnd.id),
+        payload={"round_number": 1, "trigger": rnd.trigger_type},
+    )
+    db.flush()
+
+    ctx = CodeSessionContext(db=db, session=session, job=job, actor_id=aid, revision_round=rnd)
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_initial_request(session, job, rnd, actor_id=aid)
+
+    try:
+        adapter.run_plan_only_request(req, context=ctx)
+    except FrameworkScanError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except ChangePlanRejected:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except EngineConfigurationError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except EngineAdapterError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+
+    db.refresh(job)
+    job.status = AutomationJobStatus.AWAITING_PLAN_APPROVAL.value
+    session.plan_approved_at = None
+    sync_session_status_from_job(session, job)
+    db.flush()
+
+    if isinstance(job.change_plan_json, dict) and job.change_plan_json:
+        _record_round_artifacts(
+            db,
+            session=session,
+            job=job,
+            rnd=rnd,
+            actor_id=aid,
+            include_plan=True,
+            include_patch=False,
+            include_execution=False,
+        )
+
+    return session
+
+
+def approve_automation_session_plan(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+    if job.status != AutomationJobStatus.AWAITING_PLAN_APPROVAL.value:
+        raise ValueError("plan_not_ready")
+
+    aid = actor_id.strip()
+    if not aid:
+        raise ValueError("actor_missing")
+
+    rnd = _get_initial_round_in_progress(db, session.id)
+    if rnd is None:
+        raise ValueError("plan_round_missing")
+
+    session.plan_approved_at = datetime.now(timezone.utc)
+    rr = AutomationReviewRequest(
+        automation_session_id=session.id,
+        revision_round_id=rnd.id,
+        actor_id=aid[:256],
+        instruction_text="Plan approved.",
+        target_scope=None,
+        action_type=AutomationReviewRequestAction.APPROVE_PLAN.value,
+        status=AutomationReviewRequestStatus.RECORDED.value,
+    )
+    db.add(rr)
+    db.flush()
+    sync_session_status_from_job(session, job)
+    return session
+
+
+def request_session_plan_revision(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str,
+    instruction_text: str,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    job = db.get(AutomationJob, session.automation_job_id) if session.automation_job_id else None
+    if job is None:
+        raise ValueError("job_not_found")
+    if job.status != AutomationJobStatus.AWAITING_PLAN_APPROVAL.value:
+        raise ValueError("plan_not_ready")
+
+    aid = actor_id.strip()
+    inst = instruction_text.strip()
+    if not aid:
+        raise ValueError("actor_missing")
+    if not inst:
+        raise ValueError("instruction_missing")
+
+    rnd = _get_initial_round_in_progress(db, session.id)
+    if rnd is None:
+        raise ValueError("plan_round_missing")
+
+    session.plan_approved_at = None
+    rr = AutomationReviewRequest(
+        automation_session_id=session.id,
+        revision_round_id=rnd.id,
+        actor_id=aid[:256],
+        instruction_text=inst[:20000],
+        target_scope=None,
+        action_type=AutomationReviewRequestAction.REQUEST_PLAN_REVISION.value,
+        status=AutomationReviewRequestStatus.RECORDED.value,
+    )
+    db.add(rr)
+    db.flush()
+
+    job.status = AutomationJobStatus.PLANNING_CHANGES.value
+    automation_job_service.plan_automation_job_changes(db, job.id, actor_id=aid)
+    db.refresh(job)
+    job.status = AutomationJobStatus.AWAITING_PLAN_APPROVAL.value
+    sync_session_status_from_job(session, job)
+    db.flush()
+
+    if isinstance(job.change_plan_json, dict) and job.change_plan_json:
+        _record_round_artifacts(
+            db,
+            session=session,
+            job=job,
+            rnd=rnd,
+            actor_id=aid,
+            include_plan=True,
+            include_patch=False,
+            include_execution=False,
+        )
+    return session
+
+
+def _execute_automation_session_after_plan_approval(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str | None = None,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    if not session.automation_job_id:
+        raise ValueError("session_missing_job")
+    job = db.get(AutomationJob, session.automation_job_id)
+    if job is None:
+        raise ValueError("job_not_found")
+    if job.status != AutomationJobStatus.AWAITING_PLAN_APPROVAL.value:
+        raise ValueError("plan_not_ready")
+    if session.plan_approved_at is None:
+        raise ValueError("plan_not_approved")
+
+    aid = (actor_id or session.created_by or "").strip()
+    if not aid:
+        raise ValueError("actor_missing")
+
+    rnd = _get_initial_round_in_progress(db, session.id)
+    if rnd is None:
+        raise ValueError("plan_round_missing")
+
+    job.status = AutomationJobStatus.GENERATING_CODE.value
+    db.flush()
+
+    adapter = resolve_coding_agent_adapter(session.coding_engine)
+    ctx = CodeSessionContext(db=db, session=session, job=job, actor_id=aid, revision_round=rnd)
+    builder = AutomationEnginePayloadBuilder()
+    req = builder.build_initial_request(session, job, rnd, actor_id=aid)
+
+    try:
+        adapter.run_execute_after_plan_request(req, context=ctx)
+    except PatchRejected:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except WorkspaceApplyRejected:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except EngineTimeoutError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except EngineRepoAccessError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except EngineMalformedOutputError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+    except EngineAdapterError:
+        _handle_initial_engine_errors(db, session=session, job=job, rnd=rnd)
+        raise
+
+    db.refresh(job)
+    reconcile_job_for_session_approve(db, job)
+    sync_session_status_from_job(session, job)
+    db.flush()
+
+    _record_round_artifacts(
+        db,
+        session=session,
+        job=job,
+        rnd=rnd,
+        actor_id=aid,
+        include_plan=False,
+        include_patch=True,
+        include_execution=True,
+    )
+
+    sync_session_status_from_job(session, job)
+    rnd.status = "completed" if job.status != AutomationJobStatus.FAILED.value else "failed"
+    session.current_round_number = 1
+    db.flush()
+    return session
+
+
+def start_automation_session(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    actor_id: str | None = None,
+    repository_connection_id: uuid.UUID | None = None,
+) -> AutomationSession:
+    session = db.get(AutomationSession, session_id)
+    if session is None:
+        raise ValueError("session_not_found")
+    if not session.automation_job_id:
+        raise ValueError("session_missing_job")
+    job = db.get(AutomationJob, session.automation_job_id)
+    if job is None:
+        raise ValueError("job_not_found")
+
+    if job.status == AutomationJobStatus.AWAITING_PLAN_APPROVAL.value:
+        return _execute_automation_session_after_plan_approval(
+            db, session_id, actor_id=actor_id
+        )
+
+    if session.current_round_number > 0:
+        raise ValueError("session_already_started")
+    if job.status != AutomationJobStatus.PENDING.value:
+        raise ValueError("job_not_pending")
+
+    aid = (actor_id or session.created_by or "").strip()
+    if not aid:
+        raise ValueError("actor_missing")
+
+    _prepare_session_workspace_for_start(
+        db,
+        session=session,
+        job=job,
+        actor_id=aid,
+        repository_connection_id=repository_connection_id,
+    )
 
     adapter = resolve_coding_agent_adapter(session.coding_engine)
     rnd = AutomationRevisionRound(

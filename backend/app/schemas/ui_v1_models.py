@@ -9,6 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.automation_session import (
     AutomationSessionCreateRequest,
+    AutomationSessionPlanRevisionBody,
     AutomationSessionStartRequest,
 )
 from app.schemas.repository_connection import (
@@ -116,6 +117,22 @@ class UiAutomationSessionStart(BaseModel):
 
     def to_legacy(self) -> AutomationSessionStartRequest:
         return AutomationSessionStartRequest.model_validate(self.model_dump(by_alias=False))
+
+
+class UiAutomationSessionPlanRevision(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
+
+    actor_id: str = Field(default="qswarm-web", alias="actorId", max_length=256)
+    instruction_text: str = Field(
+        ...,
+        min_length=1,
+        max_length=20000,
+        validation_alias=AliasChoices("instruction", "instructionText"),
+    )
+
+    def to_legacy(self) -> AutomationSessionPlanRevisionBody:
+        aid = (self.actor_id or "").strip() or "qswarm-web"
+        return AutomationSessionPlanRevisionBody(actor_id=aid, instruction_text=self.instruction_text)
 
 
 class UiAutomationSessionApprove(BaseModel):

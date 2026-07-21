@@ -32,6 +32,7 @@ from app.schemas.ui_v1_models import (
     UiAutomationSessionApprove,
     UiAutomationSessionCreate,
     UiAutomationSessionCreatePr,
+    UiAutomationSessionPlanRevision,
     UiAutomationSessionRevision,
     UiAutomationSessionStart,
     UiBranchPolicyCreate,
@@ -241,6 +242,26 @@ def ui_get_session_detail(session_id: uuid.UUID, db: DbSession):
 def ui_create_session(body: UiAutomationSessionCreate, db: DbSession):
     res = as_routes.create_session(body.to_legacy(db=db), db)
     return build_session_detail_json_for_ui(db, uuid.UUID(res.id))
+
+
+@router.post("/sessions/{session_id}/prepare-plan", responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+def ui_prepare_session_plan(session_id: uuid.UUID, db: DbSession, body: UiAutomationSessionStart | None = None):
+    legacy = (body or UiAutomationSessionStart()).to_legacy()
+    as_routes.prepare_session_plan(session_id, db, legacy)
+    return build_session_detail_json_for_ui(db, session_id)
+
+
+@router.post("/sessions/{session_id}/approve-plan", responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+def ui_approve_session_plan(session_id: uuid.UUID, body: UiAutomationSessionApprove, db: DbSession):
+    legacy = AutomationSessionApproveBody(actor_id=body.to_legacy_actor())
+    as_routes.approve_session_plan(session_id, legacy, db)
+    return build_session_detail_json_for_ui(db, session_id)
+
+
+@router.post("/sessions/{session_id}/request-plan-revision", responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+def ui_request_session_plan_revision(session_id: uuid.UUID, body: UiAutomationSessionPlanRevision, db: DbSession):
+    as_routes.request_session_plan_revision(session_id, body.to_legacy(), db)
+    return build_session_detail_json_for_ui(db, session_id)
 
 
 @router.post(

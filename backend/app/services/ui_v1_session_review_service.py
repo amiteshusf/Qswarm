@@ -94,8 +94,15 @@ def _round_number_by_id(rounds: list[dict[str, Any]]) -> dict[str, int]:
 def _derive_next_actions(summary: dict[str, Any]) -> list[str]:
     ui_status = map_backend_to_ui_dashboard_status(summary)
     workflow = _s(summary.get("status"))
+    job = _s(summary.get("job_status"))
+    plan_approved = bool(summary.get("plan_approved_at"))
+
+    if ui_status == "plan_ready" or workflow == "plan_ready" or job == "awaiting_plan_approval":
+        if plan_approved:
+            return ["start_automation"]
+        return ["approve_plan", "request_plan_revision"]
     if ui_status == "draft":
-        return ["start_automation"]
+        return ["prepare_plan", "start_automation"]
     if ui_status in ("running", "revising"):
         return []
     if ui_status == "awaiting_review":
@@ -140,6 +147,10 @@ def _build_review_timeline(
         text = _s(r.get("instruction_text"))
         if not text and action == "approve":
             text = "Approved for publish."
+        elif not text and action == "approve_plan":
+            text = "Plan approved."
+        elif not text and action == "request_plan_revision":
+            text = "Requested plan changes."
         elif not text and action == "manual_edit_ack":
             text = "Manual edit acknowledged."
         item: dict[str, Any] = {
