@@ -84,3 +84,8 @@ class WorkflowRun(Base):
         back_populates="workflow_run",
         cascade="all, delete-orphan",
     )
+    test_case_records: Mapped[list["TestCaseRecord"]] = relationship(
+        "TestCaseRecord",
+        back_populates="workflow_run",
+        cascade="all, delete-orphan",
+    )

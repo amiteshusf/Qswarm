@@ -71,6 +71,12 @@ def approve(
             entity_id=str(run.id),
             payload={"via": "approval"},
         )
+    from app.services.test_case_registry_service import materialize_test_cases_from_approved_workflow
+
+    try:
+        materialize_test_cases_from_approved_workflow(db, row, actor_id=actor_id, auto_publish=True)
+    except Exception:
+        pass
     db.flush()
     return row
 

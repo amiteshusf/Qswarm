@@ -610,6 +610,7 @@ def session_to_summary(db: Session, session: AutomationSession) -> dict[str, Any
         "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         "job_status": job.status if job else None,
         "plan_approved_at": session.plan_approved_at.isoformat() if session.plan_approved_at else None,
+        "test_case_record_id": str(session.test_case_record_id) if session.test_case_record_id else None,
     }
 
 

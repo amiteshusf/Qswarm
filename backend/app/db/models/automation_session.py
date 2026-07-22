@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from app.db.models.automation_revision_round import AutomationRevisionRound
     from app.db.models.automation_review_request import AutomationReviewRequest
     from app.db.models.code_review_request import CodeReviewRequest
+    from app.db.models.test_case_record import TestCaseRecord
     from app.db.models.workflow_run import WorkflowRun
     from app.db.models.workspace_cache_entry import WorkspaceCacheEntry
 
@@ -52,6 +53,12 @@ class AutomationSession(Base):
     workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True
     )
+    test_case_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("test_case_records.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_by: Mapped[str] = mapped_column(String(256), nullable=False)
     plan_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -70,6 +77,10 @@ class AutomationSession(Base):
     )
     workflow_run: Mapped["WorkflowRun | None"] = relationship(
         "WorkflowRun", back_populates="automation_sessions"
+    )
+    test_case_record: Mapped["TestCaseRecord | None"] = relationship(
+        "TestCaseRecord",
+        foreign_keys=[test_case_record_id],
     )
     revision_rounds: Mapped[list["AutomationRevisionRound"]] = relationship(
         "AutomationRevisionRound",

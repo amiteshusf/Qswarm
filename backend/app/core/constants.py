@@ -107,6 +107,28 @@ class AuditEventType(StrEnum):
     AUTOMATION_EXECUTION_ATTEMPT_RECORDED = "automation_execution_attempt_recorded"
     AUTOMATION_REVIEW_REQUEST_RECORDED = "automation_review_request_recorded"
     AUTOMATION_SESSION_APPROVED = "automation_session_approved"
+    TEST_CASE_REGISTRY_MATERIALIZED = "test_case_registry_materialized"
+    TEST_CASE_PUBLISHED = "test_case_published"
+    TEST_CASE_PUBLISH_FAILED = "test_case_publish_failed"
+    TEST_CASE_AUTOMATION_STARTED = "test_case_automation_started"
+
+
+class TestCaseApprovalStatus(StrEnum):
+    APPROVED = "approved"
+
+
+class TestCasePublicationStatus(StrEnum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+class TestCaseAutomationStatus(StrEnum):
+    NOT_STARTED = "not_started"
+    AUTOMATION_READY = "automation_ready"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class PrRecordStatus(StrEnum):

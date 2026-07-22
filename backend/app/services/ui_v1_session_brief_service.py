@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.models.automation_job import AutomationJob
 from app.db.models.repository_branch_policy import RepositoryBranchPolicy
 from app.db.models.repository_connection import RepositoryConnection
+from app.db.models.test_case_record import TestCaseRecord
 from app.services import automation_session_service
 from app.services.ui_v1_branch_policies import branch_policy_id_for_connection, format_branch_policy_json_for_ui
 from app.services.ui_v1_dashboard import map_backend_to_ui_dashboard_status
@@ -73,6 +74,34 @@ def _build_source_summary(session_summary: dict[str, Any], job: AutomationJob | 
     if missing:
         out["missing_information"] = missing[:20]
     return out
+
+
+def _enrich_source_summary_from_registry(
+    db: Session,
+    session_summary: dict[str, Any],
+    source_summary: dict[str, Any],
+) -> dict[str, Any]:
+    tcr_raw = session_summary.get("test_case_record_id")
+    if not tcr_raw:
+        return source_summary
+    try:
+        tcr_id = uuid.UUID(str(tcr_raw))
+    except (ValueError, TypeError):
+        return source_summary
+    record = db.get(TestCaseRecord, tcr_id)
+    if record is None:
+        return source_summary
+    source_summary["registry_key"] = record.registry_key
+    source_summary["source_story_key"] = record.source_story_key
+    if record.external_id:
+        source_summary["published_test_case_id"] = record.external_id
+    if record.external_url:
+        source_summary["published_test_case_url"] = record.external_url
+    source_summary["traceability_label"] = (
+        f"Automating test case {record.external_id or record.registry_key} "
+        f"from story {record.source_story_key}"
+    )
+    return source_summary
 
 
 def _load_repository_connection(db: Session, conn_id: Any) -> RepositoryConnection | None:
@@ -258,7 +287,11 @@ def build_session_brief_for_ui(db: Session, session_id: uuid.UUID) -> dict[str, 
             "created_at": summary.get("created_at") or "",
             "updated_at": summary.get("updated_at") or "",
         },
-        "source_summary": _build_source_summary(summary, job),
+        "source_summary": _enrich_source_summary_from_registry(
+            db,
+            summary,
+            _build_source_summary(summary, job),
+        ),
         "setup": _build_setup(db, summary, job),
         "automation_brief": _build_automation_brief(job, plan_versions),
     }

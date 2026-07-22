@@ -24,6 +24,7 @@ from app.db.models import (  # noqa: F401 — register metadata
     JiraStory,
     JiraTestDesignReviewIssue,
     PrRecord,
+    TestCaseRecord,
     TestDesignFeedback,
     TestDesignVersion,
     WorkflowRun,
