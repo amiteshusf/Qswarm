@@ -160,7 +160,7 @@ def list_stories_for_ui(
     status: str | None = None,
     q: str | None = None,
     limit: int = 50,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     clauses = ['issuetype in (Story, Task)']
     if project_key:
         clauses.append(f'project = "{project_key.strip().upper()}"')
@@ -180,16 +180,16 @@ def list_stories_for_ui(
             {
                 "story_key": key,
                 "title": str(issue.get("summary") or ""),
+                "description": str(issue.get("description") or ""),
                 "status": issue.get("status"),
-                "issue_type": issue.get("issue_type"),
-                "labels": issue.get("labels") or [],
-                "readiness": "has_active_run" if active else "ready",
+                "sprint": issue.get("sprint"),
+                "assignee": issue.get("assignee"),
+                "readiness": "ready",
                 "active_workflow_run_id": str(active.id) if active else None,
-                "active_workflow_run_status": active.status if active else None,
-                "active_workflow_stage": map_product_stage(active) if active else None,
             }
         )
-    return items
+    total = int(data.get("total") if data.get("total") is not None else len(items))
+    return {"items": items, "total": total}
 
 
 def get_story_detail_for_ui(db: Session, jira: JiraClient, story_key: str) -> dict[str, Any]:

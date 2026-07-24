@@ -78,10 +78,13 @@ def _through_test_case_review(ui_client, run_id: str) -> dict:
 def test_list_eligible_jira_stories(ui_client):
     r = ui_client.get("/api/v1/stories?projectKey=QSW")
     assert r.status_code == 200, r.text
-    items = r.json()["items"]
-    assert len(items) >= 1
-    assert "storyKey" in items[0]
-    assert "readiness" in items[0]
+    body = r.json()
+    assert "stories" in body
+    assert "total" in body
+    assert len(body["stories"]) >= 1
+    assert "storyKey" in body["stories"][0]
+    assert "readiness" in body["stories"][0]
+    assert "hasActiveRun" in body["stories"][0]
 
 
 def test_get_story_detail(ui_client):

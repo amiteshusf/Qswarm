@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import Any
 
 import httpx
@@ -175,6 +176,21 @@ def _stub_search(jql: str, max_results: int) -> dict[str, Any]:
             ],
             "total": 1,
         }
+    key_match = re.search(r'key\s*=\s*"([^"]+)"', jql, flags=re.IGNORECASE)
+    if key_match:
+        key = key_match.group(1).upper()
+        return {
+            "issues": [
+                {
+                    "key": key,
+                    "fields": {
+                        "summary": f"[Stub] Story {key}",
+                        "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                    },
+                }
+            ],
+            "total": 1,
+        }
     return {
         "issues": [
             {
@@ -268,14 +284,18 @@ class JiraClient:
                 k = item.get("key", "STUB-1")
                 fields = item.get("fields") or {}
                 st = fields.get("status") or {}
+                stub_detail = _stub_issue(str(k).upper())
                 issues.append(
                     {
                         "issue_key": k,
-                        "summary": str(fields.get("summary") or ""),
-                        "status": st.get("name"),
-                        "labels": list(fields.get("labels") or []),
-                        "issue_type": (fields.get("issuetype") or {}).get("name"),
+                        "summary": str(fields.get("summary") or stub_detail.get("summary") or ""),
+                        "description": str(stub_detail.get("description") or ""),
+                        "status": st.get("name") or stub_detail.get("status"),
+                        "labels": list(fields.get("labels") or stub_detail.get("labels") or []),
+                        "issue_type": (fields.get("issuetype") or {}).get("name") or stub_detail.get("issue_type"),
                         "status_category_key": (st.get("statusCategory") or {}).get("key"),
+                        "assignee": stub_detail.get("assignee"),
+                        "sprint": None,
                     }
                 )
             return {"issues": issues, "total": stub.get("total")}
@@ -285,7 +305,7 @@ class JiraClient:
         body = {
             "jql": jql,
             "maxResults": max_results,
-            "fields": ["summary", "status", "labels", "issuetype"],
+            "fields": ["summary", "status", "labels", "issuetype", "description", "assignee"],
         }
         try:
             with httpx.Client(timeout=45.0) as client:
@@ -339,14 +359,20 @@ class JiraClient:
             fields = item.get("fields") or {}
             st = fields.get("status") or {}
             issue_key = str(item.get("key") or fields.get("key") or "").strip()
+            desc = fields.get("description")
+            description_text = _extract_adf_text(desc) if isinstance(desc, dict) else (desc or "")
+            assignee = fields.get("assignee") or {}
             issues.append(
                 {
                     "issue_key": issue_key,
                     "summary": str(fields.get("summary") or ""),
+                    "description": str(description_text or ""),
                     "status": st.get("name"),
                     "labels": list(fields.get("labels") or []),
                     "issue_type": (fields.get("issuetype") or {}).get("name"),
                     "status_category_key": (st.get("statusCategory") or {}).get("key"),
+                    "assignee": assignee.get("displayName") or assignee.get("emailAddress"),
+                    "sprint": None,
                 }
             )
 

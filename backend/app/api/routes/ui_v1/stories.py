@@ -9,8 +9,10 @@ from app.connectors.jira_client import JiraClient
 from app.core.config import get_settings
 from app.schemas.common import ErrorDetail, ErrorResponse
 from app.schemas.test_design_workspace import TestDesignRunCreateBody, UiBulkTestDesignRunCreate, UiTestDesignRunCreate
+from app.schemas.ui_v1_stories import UiStoryListResponse
 from app.services import test_design_workspace_service
 from app.services.ui_v1_mapper import dict_keys_to_camel
+from app.services.ui_v1_stories import build_story_list_for_ui
 
 router = APIRouter(tags=["ui-v1-stories"])
 
@@ -19,7 +21,7 @@ def _jira() -> JiraClient:
     return JiraClient(get_settings())
 
 
-@router.get("/stories")
+@router.get("/stories", response_model=UiStoryListResponse)
 def ui_list_stories(
     db: DbSession,
     project_key: str | None = Query(default=None, alias="projectKey"),
@@ -27,10 +29,15 @@ def ui_list_stories(
     q: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
 ):
-    items = test_design_workspace_service.list_stories_for_ui(
-        db, _jira(), project_key=project_key, status=status, q=q, limit=limit
+    return build_story_list_for_ui(
+        db,
+        _jira(),
+        get_settings(),
+        project_key=project_key,
+        status=status,
+        q=q,
+        limit=limit,
     )
-    return {"items": [dict_keys_to_camel(x) for x in items]}
 
 
 @router.get("/stories/{story_key}", responses={404: {"model": ErrorResponse}})
