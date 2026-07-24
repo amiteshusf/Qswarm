@@ -1,0 +1,14 @@
+{
+  "applicationName": "qswarm-backend",
+  "claudeCodeEnabled": true,
+  "codingProvider": "stub",
+  "copilotAgentEnabled": true,
+  "debug": true,
+  "environment": "local",
+  "jira": {
+    "configured": true,
+    "useStub": true
+  },
+  "notes": "Read-only slice for the UI; secrets are never returned.",
+  "workspaceRoot": "/tmp/qswarm"
+}

@@ -1,0 +1,136 @@
+{
+  "items": [
+    {
+      "approvalStatus": "approved",
+      "automationSessionId": null,
+      "automationStatus": "automation_ready",
+      "caseIndex": 1,
+      "caseType": "positive",
+      "createdAt": "2026-07-24T12:31:56",
+      "expectedResults": [
+        "[Stub] Implement workflow for NSP-696",
+        "No unexpected errors in application logs for the path"
+      ],
+      "externalId": "STUB-TC-0002",
+      "externalUrl": "https://usfoods.atlassian.net/browse/STUB-TC-0002",
+      "id": "c8e257bc-135c-4a77-8164-357fa0115d8c",
+      "objective": "Primary success path for NSP-696",
+      "preconditions": [
+        "User has required access",
+        "System in nominal configuration"
+      ],
+      "publicationError": null,
+      "publicationStatus": "published",
+      "publishedAt": "2026-07-24T12:31:56.474808",
+      "registryKey": "NSP-696-TC-01",
+      "sourceStoryKey": "NSP-696",
+      "sourceSystem": "jira",
+      "steps": [
+        "Arrange data or state implied by story scope",
+        "Execute main user action described in the business goal",
+        "Observe system response and persisted state"
+      ],
+      "summary": "Primary success path for NSP-696",
+      "title": "Primary success path for NSP-696",
+      "updatedAt": "2026-07-24T12:31:56",
+      "workflowRunId": "488026bb-31e7-4c18-aa67-fad139fc32d2"
+    },
+    {
+      "approvalStatus": "approved",
+      "automationSessionId": null,
+      "automationStatus": "automation_ready",
+      "caseIndex": 2,
+      "caseType": "negative",
+      "createdAt": "2026-07-24T12:31:56",
+      "expectedResults": [
+        "User receives a clear, safe error message",
+        "System remains consistent (no partial corrupt state)"
+      ],
+      "externalId": "STUB-TC-0003",
+      "externalUrl": "https://usfoods.atlassian.net/browse/STUB-TC-0003",
+      "id": "bc2f4654-4bc2-44ff-8b71-df60dd4b5da6",
+      "objective": "Invalid input / failure handling",
+      "preconditions": [
+        "Feature entry point available"
+      ],
+      "publicationError": null,
+      "publicationStatus": "published",
+      "publishedAt": "2026-07-24T12:31:56.476029",
+      "registryKey": "NSP-696-TC-02",
+      "sourceStoryKey": "NSP-696",
+      "sourceSystem": "jira",
+      "steps": [
+        "Provide invalid or disallowed inputs per domain rules",
+        "Submit or trigger the action"
+      ],
+      "summary": "Invalid input / failure handling",
+      "title": "Invalid input / failure handling",
+      "updatedAt": "2026-07-24T12:31:56",
+      "workflowRunId": "488026bb-31e7-4c18-aa67-fad139fc32d2"
+    },
+    {
+      "approvalStatus": "approved",
+      "automationSessionId": null,
+      "automationStatus": "automation_ready",
+      "caseIndex": 3,
+      "caseType": "edge",
+      "createdAt": "2026-07-24T12:31:56",
+      "expectedResults": [
+        "Behavior remains defined; degrades gracefully if limits exceeded"
+      ],
+      "externalId": "STUB-TC-0004",
+      "externalUrl": "https://usfoods.atlassian.net/browse/STUB-TC-0004",
+      "id": "ec18d34a-b707-47d1-b6e0-6cfca3679a0f",
+      "objective": "Boundary / edge conditions",
+      "preconditions": [
+        "Representative edge data available"
+      ],
+      "publicationError": null,
+      "publicationStatus": "published",
+      "publishedAt": "2026-07-24T12:31:56.476874",
+      "registryKey": "NSP-696-TC-03",
+      "sourceStoryKey": "NSP-696",
+      "sourceSystem": "jira",
+      "steps": [
+        "Exercise upper and lower bounds derived from scope bullets",
+        "Repeat under minimum and maximum realistic volumes where applicable"
+      ],
+      "summary": "Boundary / edge conditions",
+      "title": "Boundary / edge conditions",
+      "updatedAt": "2026-07-24T12:31:56",
+      "workflowRunId": "488026bb-31e7-4c18-aa67-fad139fc32d2"
+    },
+    {
+      "approvalStatus": "approved",
+      "automationSessionId": null,
+      "automationStatus": "automation_ready",
+      "caseIndex": 4,
+      "caseType": "positive",
+      "createdAt": "2026-07-24T12:31:56",
+      "expectedResults": [
+        "Core behavior described in summary is verifiable end-to-end: [Stub] Implement workflow for NSP-696"
+      ],
+      "externalId": "STUB-TC-0005",
+      "externalUrl": "https://usfoods.atlassian.net/browse/STUB-TC-0005",
+      "id": "24c2f619-ee5c-4c46-97b3-a320c29da631",
+      "objective": "Acceptance-linked check 1",
+      "preconditions": [
+        "Mapped acceptance criterion available"
+      ],
+      "publicationError": null,
+      "publicationStatus": "published",
+      "publishedAt": "2026-07-24T12:31:56.477642",
+      "registryKey": "NSP-696-TC-04",
+      "sourceStoryKey": "NSP-696",
+      "sourceSystem": "jira",
+      "steps": [
+        "Set up state so the criterion is observable",
+        "Perform the minimal steps to assert the criterion"
+      ],
+      "summary": "Acceptance-linked check 1",
+      "title": "Acceptance-linked check 1",
+      "updatedAt": "2026-07-24T12:31:56",
+      "workflowRunId": "488026bb-31e7-4c18-aa67-fad139fc32d2"
+    }
+  ]
+}

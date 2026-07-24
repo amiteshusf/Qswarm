@@ -1,0 +1,67 @@
+{
+  "artifactId": "6e70ac75-0cf3-44ff-93f8-da3d8b3cf026",
+  "content": {
+    "assumptions": [
+      "Issue type treated as: Story",
+      "Priority context: Medium",
+      "Jira description is the authoritative functional narrative for Sprint 1",
+      "Labels considered as themes: stub, sprint1"
+    ],
+    "automationCandidates": [
+      "Stub Jira issue NSP",
+      "696 for local development.",
+      "As a QA engineer, I need the platform to ingest this story, produce a draft test design, and pause for human approval."
+    ],
+    "boundaryCases": [
+      "Upper/lower limits for key inputs and volumes"
+    ],
+    "dataVariations": [
+      "Nominal data",
+      "Empty/minimal data",
+      "Maximum allowed values"
+    ],
+    "dependencies": [],
+    "expectedCaseRange": {
+      "max": 8,
+      "min": 3
+    },
+    "functionalAreas": [
+      "Stub Jira issue NSP",
+      "696 for local development.",
+      "As a QA engineer, I need the platform to ingest this story, produce a draft test design, and pause for human approval."
+    ],
+    "integrationConsiderations": [],
+    "negativeScenarios": [
+      "Invalid input and authorization failures",
+      "Boundary and malformed data handling"
+    ],
+    "outOfScope": [
+      "Performance soak testing",
+      "Unrelated legacy modules"
+    ],
+    "positiveScenarios": [
+      "Primary success path for the main user goal",
+      "Happy-path validation for each major acceptance criterion"
+    ],
+    "risks": [
+      "Standard delivery risk: scope clarification may arrive late"
+    ],
+    "rolesPersonas": [
+      "Standard user",
+      "Privileged user where applicable"
+    ],
+    "storyKey": "NSP-696",
+    "summary": "Test plan for NSP-696: cover success, failure, and edge behavior.",
+    "traceability": [
+      {
+        "acceptanceCriterion": "Core behavior described in summary is verifiable end-to-end: [Stub] Implement workflow for NSP-696",
+        "plannedCoverage": "positive"
+      }
+    ]
+  },
+  "createdAt": "2026-07-24T12:31:56",
+  "planApproved": false,
+  "planApprovedAt": null,
+  "planApprovedBy": null,
+  "version": 1
+}

@@ -1,0 +1,22 @@
+{
+  "stories": [
+    {
+      "acceptanceCriteriaStatus": "partial",
+      "activeRunId": null,
+      "assignee": null,
+      "description": "Stub Jira issue STUB-1 for local development.\nAs a QA engineer, I need the platform to ingest this story, produce a draft test design, and pause for human approval.",
+      "hasActiveRun": false,
+      "jiraUrl": "https://usfoods.atlassian.net/browse/STUB-1",
+      "missingInformation": [
+        "Few explicit acceptance criteria were found"
+      ],
+      "projectKey": "STUB",
+      "readiness": "partial",
+      "sprint": null,
+      "status": "Open",
+      "storyKey": "STUB-1",
+      "title": "Stub result for JQL: issuetype in (Story, Task) AND project =..."
+    }
+  ],
+  "total": 1
+}

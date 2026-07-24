@@ -1,0 +1,42 @@
+{
+  "automationBrief": {
+    "available": false,
+    "summary": "Automation plan will be generated when you start this run."
+  },
+  "sessionId": "ba9e5155-b42a-462b-a3b6-54c9e485f457",
+  "sessionState": {
+    "createdAt": "2026-07-24T12:31:56",
+    "currentRoundNumber": 0,
+    "jobStatus": "pending",
+    "nextActions": [
+      "prepare_plan",
+      "start_automation"
+    ],
+    "planApproved": false,
+    "planApprovedAt": "",
+    "status": "draft",
+    "updatedAt": "2026-07-24T12:31:56",
+    "workflowStatus": "pending"
+  },
+  "setup": {
+    "branchPolicy": null,
+    "branchPolicyId": null,
+    "engine": "stub",
+    "repository": {
+      "baseBranch": "main",
+      "name": "",
+      "owner": ""
+    },
+    "repositoryConnectionId": "",
+    "workspaceConfigured": true
+  },
+  "sourceSummary": {
+    "caseId": "NSP-TC-01",
+    "sourceReference": "NSP-TC-01",
+    "sourceSystem": "",
+    "sourceTitle": "NSP-TC-01",
+    "steps": [
+      "Open app"
+    ]
+  }
+}

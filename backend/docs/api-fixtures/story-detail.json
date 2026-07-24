@@ -1,0 +1,15 @@
+{
+  "activeWorkflowRunId": null,
+  "activeWorkflowRunStatus": null,
+  "activeWorkflowStage": null,
+  "description": "Stub Jira issue NSP-696 for local development.\nAs a QA engineer, I need the platform to ingest this story, produce a draft test design, and pause for human approval.",
+  "issueType": "Story",
+  "labels": [
+    "stub",
+    "sprint1"
+  ],
+  "priority": "Medium",
+  "status": "To Do",
+  "storyKey": "NSP-696",
+  "title": "[Stub] Implement workflow for NSP-696"
+}

@@ -1,0 +1,15 @@
+{
+  "createdAt": "2026-07-24T12:31:56",
+  "engine": "stub",
+  "executions": [],
+  "id": "ba9e5155-b42a-462b-a3b6-54c9e485f457",
+  "patches": [],
+  "repoConnectionId": "",
+  "reviews": [],
+  "rounds": [],
+  "sourceLabel": "NSP-TC-01",
+  "sourceRef": "NSP-TC-01",
+  "status": "draft",
+  "updatedAt": "2026-07-24T12:31:56",
+  "workflowStatus": "pending"
+}

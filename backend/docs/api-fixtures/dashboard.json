@@ -1,0 +1,31 @@
+{
+  "applicationName": "qswarm-backend",
+  "branchPolicyCount": 0,
+  "environment": "local",
+  "recentSessions": [
+    {
+      "approvedCaseId": "NSP-TC-01",
+      "createdAt": "2026-07-24T12:31:56",
+      "currentRoundNumber": 0,
+      "engine": "stub",
+      "id": "ba9e5155-b42a-462b-a3b6-54c9e485f457",
+      "jobStatus": "failed",
+      "repoConnectionId": "",
+      "sourceRef": "NSP-TC-01",
+      "status": "failed",
+      "updatedAt": "2026-07-24T12:31:56"
+    }
+  ],
+  "repositoryConnectionCount": 0,
+  "sessionCounts": {
+    "awaiting_review": 0,
+    "cancelled": 0,
+    "draft": 0,
+    "failed": 1,
+    "plan_ready": 0,
+    "queued": 0,
+    "revising": 0,
+    "running": 0,
+    "succeeded": 0
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "approvalId": null,
+  "automationReadyTestCases": [],
+  "blockedReason": null,
+  "createdAt": "2026-07-24T12:31:56",
+  "currentStage": "intake_ready",
+  "currentStep": "intake_ready",
+  "id": "488026bb-31e7-4c18-aa67-fad139fc32d2",
+  "initiatedBy": "qa-lead",
+  "nextActions": [
+    "analyze_requirements"
+  ],
+  "productWorkspace": {
+    "mode": "qswarm_first",
+    "stage": "intake_ready"
+  },
+  "requirementAnalysis": null,
+  "reviewIssue": null,
+  "sourceStory": {
+    "intakeArtifactId": "0c35a35a-9975-4899-bb07-67d05949c016",
+    "storyKey": "NSP-696"
+  },
+  "status": "pending",
+  "storyKey": "NSP-696",
+  "testCaseRecords": [],
+  "testDesignPlan": null,
+  "updatedAt": "2026-07-24T12:31:56",
+  "versions": [],
+  "workflowName": "sprint1_qswarm_workspace"
+}

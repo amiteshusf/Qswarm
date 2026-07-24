@@ -1,0 +1,45 @@
+{
+  "artifactId": "fdb1d67c-417e-46f4-9462-abdb92804154",
+  "content": {
+    "acceptanceCriteria": [
+      "Core behavior described in summary is verifiable end-to-end: [Stub] Implement workflow for NSP-696"
+    ],
+    "ambiguities": [],
+    "assumptions": [
+      "Issue type treated as: Story",
+      "Priority context: Medium",
+      "Jira description is the authoritative functional narrative for Sprint 1",
+      "Labels considered as themes: stub, sprint1"
+    ],
+    "businessRules": [
+      "Stub Jira issue NSP",
+      "696 for local development.",
+      "As a QA engineer, I need the platform to ingest this story, produce a draft test design, and pause for human approval."
+    ],
+    "dependencies": [],
+    "missingInformation": [
+      "Detailed functional description is limited",
+      "Few explicit acceptance criteria were found"
+    ],
+    "readiness": {
+      "blockers": [
+        "Detailed functional description is limited",
+        "Few explicit acceptance criteria were found"
+      ],
+      "confidence": "medium",
+      "readyForPlanning": false
+    },
+    "risks": [
+      "Standard delivery risk: scope clarification may arrive late"
+    ],
+    "storyKey": "NSP-696",
+    "storySummary": "[Stub] Implement workflow for NSP-696",
+    "suggestedTestScope": [
+      "Stub Jira issue NSP",
+      "696 for local development.",
+      "As a QA engineer, I need the platform to ingest this story, produce a draft test design, and pause for human approval."
+    ]
+  },
+  "createdAt": "2026-07-24T12:31:56",
+  "version": 1
+}

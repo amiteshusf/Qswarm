@@ -1,0 +1,137 @@
+{
+  "conversation": [
+    {
+      "actor": "qswarm-web",
+      "createdAt": "2026-07-24T12:31:56.399943+00:00",
+      "id": "plan-appr-488026bb-31e7-4c18-aa67-fad139fc32d2",
+      "status": "addressed",
+      "text": "Test-design plan approved.",
+      "type": "plan_approved"
+    }
+  ],
+  "publication": {
+    "publishedCount": 0,
+    "records": []
+  },
+  "reviewSummary": {
+    "automationCandidateCount": 2,
+    "currentVersion": 1,
+    "gapsCount": 2,
+    "nextActions": [
+      "request_revision",
+      "approve_test_design"
+    ],
+    "status": "awaiting_test_case_review",
+    "testCaseCount": 4,
+    "workflowStatus": "awaiting_approval"
+  },
+  "testCases": [
+    {
+      "automationSuitability": "candidate",
+      "draftKey": "NSP-696-TC-01",
+      "expectedResults": [
+        "[Stub] Implement workflow for NSP-696",
+        "No unexpected errors in application logs for the path"
+      ],
+      "generatedVersion": 1,
+      "objective": "Primary success path for NSP-696",
+      "preconditions": [
+        "User has required access",
+        "System in nominal configuration"
+      ],
+      "priority": "medium",
+      "registryKey": "NSP-696-TC-01",
+      "sourceStoryKey": "NSP-696",
+      "status": "draft",
+      "steps": [
+        "Arrange data or state implied by story scope",
+        "Execute main user action described in the business goal",
+        "Observe system response and persisted state"
+      ],
+      "testType": "positive",
+      "title": "Primary success path for NSP-696"
+    },
+    {
+      "automationSuitability": "manual_first",
+      "draftKey": "NSP-696-TC-02",
+      "expectedResults": [
+        "User receives a clear, safe error message",
+        "System remains consistent (no partial corrupt state)"
+      ],
+      "generatedVersion": 1,
+      "objective": "Invalid input / failure handling",
+      "preconditions": [
+        "Feature entry point available"
+      ],
+      "priority": "medium",
+      "registryKey": "NSP-696-TC-02",
+      "sourceStoryKey": "NSP-696",
+      "status": "draft",
+      "steps": [
+        "Provide invalid or disallowed inputs per domain rules",
+        "Submit or trigger the action"
+      ],
+      "testType": "negative",
+      "title": "Invalid input / failure handling"
+    },
+    {
+      "automationSuitability": "manual_first",
+      "draftKey": "NSP-696-TC-03",
+      "expectedResults": [
+        "Behavior remains defined; degrades gracefully if limits exceeded"
+      ],
+      "generatedVersion": 1,
+      "objective": "Boundary / edge conditions",
+      "preconditions": [
+        "Representative edge data available"
+      ],
+      "priority": "medium",
+      "registryKey": "NSP-696-TC-03",
+      "sourceStoryKey": "NSP-696",
+      "status": "draft",
+      "steps": [
+        "Exercise upper and lower bounds derived from scope bullets",
+        "Repeat under minimum and maximum realistic volumes where applicable"
+      ],
+      "testType": "edge",
+      "title": "Boundary / edge conditions"
+    },
+    {
+      "automationSuitability": "candidate",
+      "draftKey": "NSP-696-TC-04",
+      "expectedResults": [
+        "Core behavior described in summary is verifiable end-to-end: [Stub] Implement workflow for NSP-696"
+      ],
+      "generatedVersion": 1,
+      "objective": "Acceptance-linked check 1",
+      "preconditions": [
+        "Mapped acceptance criterion available"
+      ],
+      "priority": "medium",
+      "registryKey": "NSP-696-TC-04",
+      "sourceStoryKey": "NSP-696",
+      "status": "draft",
+      "steps": [
+        "Set up state so the criterion is observable",
+        "Perform the minimal steps to assert the criterion"
+      ],
+      "testType": "positive",
+      "title": "Acceptance-linked check 1"
+    }
+  ],
+  "versions": [
+    {
+      "artifactId": "390c4bd9-e6a2-4b00-b67e-b8f04202700a",
+      "createdAt": "2026-07-24T12:31:56",
+      "createdBy": "qswarm-web",
+      "id": "6d9fb2a5-58c7-4229-b714-04867e44645a",
+      "isCurrent": true,
+      "notes": null,
+      "parentVersionId": null,
+      "sourceFeedbackId": null,
+      "versionAction": "initial",
+      "versionNumber": 1
+    }
+  ],
+  "workflowRunId": "488026bb-31e7-4c18-aa67-fad139fc32d2"
+}

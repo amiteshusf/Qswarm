@@ -1,0 +1,35 @@
+{
+  "approvalStatus": "approved",
+  "automationSessionId": null,
+  "automationStatus": "automation_ready",
+  "caseIndex": 1,
+  "caseType": "positive",
+  "createdAt": "2026-07-24T12:31:56",
+  "expectedResults": [
+    "[Stub] Implement workflow for NSP-696",
+    "No unexpected errors in application logs for the path"
+  ],
+  "externalId": "STUB-TC-0002",
+  "externalUrl": "https://usfoods.atlassian.net/browse/STUB-TC-0002",
+  "id": "c8e257bc-135c-4a77-8164-357fa0115d8c",
+  "objective": "Primary success path for NSP-696",
+  "preconditions": [
+    "User has required access",
+    "System in nominal configuration"
+  ],
+  "publicationError": null,
+  "publicationStatus": "published",
+  "publishedAt": "2026-07-24T12:31:56.474808",
+  "registryKey": "NSP-696-TC-01",
+  "sourceStoryKey": "NSP-696",
+  "sourceSystem": "jira",
+  "steps": [
+    "Arrange data or state implied by story scope",
+    "Execute main user action described in the business goal",
+    "Observe system response and persisted state"
+  ],
+  "summary": "Primary success path for NSP-696",
+  "title": "Primary success path for NSP-696",
+  "updatedAt": "2026-07-24T12:31:56",
+  "workflowRunId": "488026bb-31e7-4c18-aa67-fad139fc32d2"
+}

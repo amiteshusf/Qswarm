@@ -10,6 +10,7 @@ from app.api.deps import DbSession
 from app.connectors.jira_client import JiraClient
 from app.core.config import get_settings
 from app.schemas.common import ErrorDetail, ErrorResponse
+from app.schemas.ui_v1_contract import UiTestDesignRunDetail
 from app.schemas.test_design_workspace import (
     UiWorkspaceApprove,
     UiWorkspacePlanRevision,
@@ -49,7 +50,7 @@ def _value_error_http(e: ValueError) -> HTTPException:
     )
 
 
-@router.get("/test-design-runs/{run_id}", responses={404: {"model": ErrorResponse}})
+@router.get("/test-design-runs/{run_id}", response_model=UiTestDesignRunDetail, responses={404: {"model": ErrorResponse}})
 def ui_get_test_design_run(run_id: uuid.UUID, db: DbSession):
     try:
         detail = test_design_workspace_service.get_run_detail_for_ui(db, run_id)

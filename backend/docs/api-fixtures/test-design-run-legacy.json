@@ -1,0 +1,47 @@
+{
+  "approvalId": "2ce35faa-f482-49c0-b07d-b8e4c04058ee",
+  "automationReadyTestCases": [],
+  "blockedReason": null,
+  "createdAt": "2026-07-24T12:31:56",
+  "currentStage": "legacy_awaiting_approval",
+  "currentStep": "awaiting_approval",
+  "id": "27c9ba3b-993e-46cc-93ba-a1df5126b9b5",
+  "initiatedBy": "tester",
+  "nextActions": [
+    "request_revision",
+    "approve_test_design"
+  ],
+  "productWorkspace": {
+    "mode": null,
+    "stage": null
+  },
+  "requirementAnalysis": null,
+  "reviewIssue": {
+    "publishStatus": "published",
+    "reviewJiraIssueKey": "STUB-TC-0006"
+  },
+  "sourceStory": {
+    "intakeArtifactId": "577291ba-d322-451e-a4f0-810d39e823f9",
+    "storyKey": "QSW-LEGACY"
+  },
+  "status": "awaiting_approval",
+  "storyKey": "QSW-LEGACY",
+  "testCaseRecords": [],
+  "testDesignPlan": null,
+  "updatedAt": "2026-07-24T12:31:56",
+  "versions": [
+    {
+      "artifactId": "0dee0c76-a0ab-4288-9947-352987d65ee6",
+      "createdAt": "2026-07-24T12:31:56",
+      "createdBy": "tester",
+      "id": "0f44090e-d5ce-4b26-a858-93c3f1bc6067",
+      "isCurrent": true,
+      "notes": null,
+      "parentVersionId": null,
+      "sourceFeedbackId": null,
+      "versionAction": "initial",
+      "versionNumber": 1
+    }
+  ],
+  "workflowName": "sprint1"
+}
