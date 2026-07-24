@@ -23,7 +23,32 @@ class ApprovalStatus(StrEnum):
 
 class ArtifactType(StrEnum):
     STORY_INTAKE = "story_intake"
+    REQUIREMENT_ANALYSIS = "requirement_analysis"
+    TEST_DESIGN_PLAN = "test_design_plan"
     TEST_DESIGN = "test_design"
+
+
+class TestDesignWorkspaceStage(StrEnum):
+    """Product-facing Sprint 1 workspace stage (stored in graph_state_json.product_workspace.stage)."""
+
+    DISCOVERED = "discovered"
+    INTAKE_READY = "intake_ready"
+    ANALYZING_REQUIREMENTS = "analyzing_requirements"
+    ANALYSIS_READY = "analysis_ready"
+    PREPARING_TEST_DESIGN_PLAN = "preparing_test_design_plan"
+    AWAITING_PLAN_APPROVAL = "awaiting_plan_approval"
+    PLAN_REVISION_REQUESTED = "plan_revision_requested"
+    PLAN_APPROVED = "plan_approved"
+    GENERATING_TEST_CASES = "generating_test_cases"
+    AWAITING_TEST_CASE_REVIEW = "awaiting_test_case_review"
+    REVISING_TEST_CASES = "revising_test_cases"
+    APPROVED = "approved"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    AUTOMATION_READY = "automation_ready"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    LEGACY_AWAITING_APPROVAL = "legacy_awaiting_approval"
 
 
 class AuditEventType(StrEnum):

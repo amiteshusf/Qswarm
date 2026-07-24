@@ -325,6 +325,10 @@ def ui_create_pr(session_id: uuid.UUID, body: UiAutomationSessionCreatePr, db: D
     return build_session_detail_json_for_ui(db, session_id)
 
 
+from app.api.routes.ui_v1.stories import router as stories_router
 from app.api.routes.ui_v1.test_cases import router as test_cases_router
+from app.api.routes.ui_v1.test_design_runs import router as test_design_runs_router
 
 router.include_router(test_cases_router)
+router.include_router(stories_router)
+router.include_router(test_design_runs_router)

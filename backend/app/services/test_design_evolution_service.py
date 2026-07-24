@@ -331,6 +331,41 @@ def apply_comment_driven_evolution(
     return fb_row, next_ver_num, rid
 
 
+def apply_workspace_evolution(
+    db: Session,
+    run: WorkflowRun,
+    *,
+    appr: Approval,
+    action: Literal["refine", "regenerate"],
+    feedback_text: str,
+    target_scope: str | None,
+    actor_id: str,
+    new_json: dict[str, Any],
+) -> tuple[TestDesignFeedback, int]:
+    """QSwarm UI revision path — same versioning as Jira, without mandatory Jira delta post."""
+    fb_row, new_art, current, _current_art, _old_content, next_ver_num = start_evolution_artifacts(
+        db,
+        run,
+        action=action,
+        feedback_text=feedback_text,
+        target_scope=target_scope,
+        actor_id=actor_id,
+        new_json=new_json,
+    )
+    finalize_evolution_version(
+        db,
+        run,
+        appr,
+        current=current,
+        fb_row=fb_row,
+        new_art=new_art,
+        action=action,
+        actor_id=actor_id,
+        next_ver_num=next_ver_num,
+    )
+    return fb_row, next_ver_num
+
+
 def evolve_test_design(
     db: Session,
     jira: JiraClient,
